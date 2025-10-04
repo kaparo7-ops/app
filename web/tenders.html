@@ -295,15 +295,11 @@ function loadUiPrefs(){ try{ const j=JSON.parse(localStorage.getItem("tenders_ui
 // ====================== تحميل الجلسة والمستخدم ======================
 async function loadSessionAndUser(){
   try{
-    const session = await kvGet("nwgd_session").catch(()=>null);
-    const users = await kvGet("nwgd_users").catch(()=>null);
-    let username = session && session.username || session && session.user || "";
-    let role = "guest";
-    if(users && Array.isArray(users)){
-      const u = users.find(x=>x.username===username);
-      if(u) role = (u.role || "member");
-    }
-    state.currentUser = {username, role};
+    const resp = await fetch("/api/auth/session-check",{credentials:"include"});
+    if(!resp.ok) throw new Error("no session");
+    const data = await resp.json();
+    const user = data && data.user || {};
+    state.currentUser = {username: user.username || "", role: user.role || "guest"};
   }catch{
     state.currentUser = {username:"", role:"guest"};
   }
@@ -925,7 +921,7 @@ function renderRecycle(){
 async function updateHealth(){
   if(!FEATURES.healthcheck){ document.getElementById('apiHealth').style.display='none'; return; }
   const tag = document.getElementById('apiHealth');
-  try{ await kvGet('nwgd_session'); tag.textContent='API ✓'; tag.classList.remove('soft'); tag.classList.add('bg-emerald-50'); }
+  try{ const resp = await fetch('/api/health'); if(!resp.ok) throw new Error('bad'); tag.textContent='API ✓'; tag.classList.remove('soft'); tag.classList.add('bg-emerald-50'); }
   catch{ tag.textContent='API ✗'; tag.classList.remove('bg-emerald-50'); tag.classList.add('bg-rose-50'); }
 }
 
@@ -1035,7 +1031,7 @@ function bindStatic(){
   // نسخ احتياطي (admin)
   document.getElementById('backupBtn').onclick = async ()=>{
     if(FEATURES.permissions && state.currentUser.role!=="admin") return alert('غير مسموح');
-    const KEYS=['nwgd_tenders_v2','nwgd_users','nwgd_settings','nwgd_session','nwgd_session_tokens'];
+    const KEYS=['nwgd_tenders_v2','nwgd_users','nwgd_settings'];
     for(const k of KEYS){
       try{ const v = await kvGet(k); const blob=new Blob([JSON.stringify({key:k,value:v},null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`backup-${k}-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); }
       catch{ /* تجاهل */ }

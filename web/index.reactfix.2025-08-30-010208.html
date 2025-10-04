@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>نظام متابعة المشاريع – Nawafed</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    .tabular-nums{font-variant-numeric:tabular-nums}
+    .mask{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:50}
+    .panel{width:880px;max-width:95vw;max-height:90vh;overflow:auto;background:#fff;border-radius:1rem;box-shadow:0 10px 40px rgba(0,0,0,.2)}
+    .btn{padding:.5rem .75rem;border-radius:.75rem;border:1px solid #e2e8f0;background:#fff}
+    .btn-primary{background:#0f172a;color:#fff;border-color:#0f172a}
+    .btn-danger{background:#e11d48;color:#fff;border-color:#e11d48}
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900">
+  <div id="root"></div>
+  <script>
+    // Error overlay so the page never stays blank
+    (function(){
+      if(window.__errOverlayInstalled) return;
+      window.__errOverlayInstalled = true;
+      window.addEventListener("error", function(e){
+        const msg = (e.error && e.error.stack) ? e.error.stack : (e.message||e.toString());
+        const d = document.createElement("div");
+        d.style.position="fixed"; d.style.inset="0"; d.style.zIndex=99999; d.style.background="rgba(0,0,0,.8)";
+        d.innerHTML = '<div style="max-width:1000px;margin:24px auto;background:#111;color:#fff;border-radius:12px;padding:16px"><h2 style="margin:0 0 8px">JavaScript Error</h2><pre>'+msg+'</pre></div>';
+        document.body.appendChild(d);
+      });
+    })();
+  </script>
+
+  <script type="text/babel" data-presets="env,react">
+    // -------- Config (server mode only) --------
+    const FORCED_SERVER = { mode:"server", base:"/api", token:"ChangeMe-LongRandomToken!" };
+    const {useState,useEffect,useMemo,useRef} = React;
+    const todayISO=()=>new Date().toISOString().slice(0,10);
+    const num=v=>{const n=Number(String(v).replace(/[^0-9.\-]/g,'')); return isNaN(n)?0:n};
+
+    // -------- KV helpers (header + query token) --------
+    async function kvGet(key){
+      const url = `${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`;
+      const r = await fetch(url, { credentials:"include" });
+      if(!r.ok) throw new Error("kv get failed: "+r.status);
+      const j = await r.json(); return j.value;
+    }
+    async function kvPut(key, value){
+      const url = `${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`;
+      const r = await fetch(url, {
+        method:"PUT",
+        headers:{ "Content-Type":"application/json", "x-sync-token": FORCED_SERVER.token },
+        body: JSON.stringify({value})
+      });
+      if(!r.ok) throw new Error("kv put failed: "+r.status);
+    }
+    function useServerState(key, initial){
+      const [state,setState]=useState(initial);
+      const bootRef = useRef(false);
+      useEffect(()=>{(async()=>{
+        try{
+          const remote = await kvGet(key);
+          if(remote==null){ setState(initial); await kvPut(key, initial); }
+          else setState(remote);
+        }catch(e){ throw e; }
+        bootRef.current = true;
+      })()},[key]);
+      const save = (v)=>{ setState(v); kvPut(key,v).catch(e=>{throw e}); };
+      return [state, save, bootRef];
+    }
+
+    // -------- Simple Auth (admin/admin123 seeded server-side) --------
+    const b64 = u8 => btoa(String.fromCharCode(...u8));
+    const randBytes=(n=16)=>{const a=new Uint8Array(n); crypto.getRandomValues(a); return a;};
+    const hex = u8 => Array.from(u8).map(b=>b.toString(16).padStart(2,"0")).join("");
+    async function pbkdf2(password,saltB64,iterations=150000,len=32){
+      const enc=new TextEncoder();
+      const key=await crypto.subtle.importKey("raw",enc.encode(password),"PBKDF2",false,["deriveBits"]);
+      const bits=await crypto.subtle.deriveBits({name:"PBKDF2",hash:"SHA-256",salt:Uint8Array.from(atob(saltB64),c=>c.charCodeAt(0)),iterations},key,len*8);
+      return hex(new Uint8Array(bits));
+    }
+    function useAuth(){
+      const [users,setUsers] = useServerState("nwgd_users", []);
+      const [session,setSession] = useServerState("nwgd_session", null);
+      const [sessionTokens,setSessionTokens] = useServerState("nwgd_session_tokens", {});
+      const [booted,setBooted]=useState(false);
+      useEffect(()=>{(async()=>{
+        try{
+          const remote = await kvGet("nwgd_users");
+          if(!Array.isArray(remote) || remote.length===0){
+            const salt=b64(randBytes(16));
+            const passHash=await pbkdf2("admin123",salt,150000);
+            await kvPut("nwgd_users", [{id:1,username:"admin",role:"admin",salt,iterations:150000,passHash}]);
+            setUsers([{id:1,username:"admin",role:"admin",salt,iterations:150000,passHash}]);
+          }
+        }catch(e){ throw e; }
+        setBooted(true);
+      })()},[]);
+      async function login(username,password){
+        const u = (users||[]).find(x=>x.username.toLowerCase()===String(username).toLowerCase());
+        if(!u) return {ok:false,msg:"المستخدم غير موجود"};
+        const h = await pbkdf2(password,u.salt,u.iterations||150000);
+        if(h!==u.passHash) return {ok:false,msg:"كلمة المرور غير صحيحة"};
+        const sid='s'+Date.now()+Math.random().toString(36).slice(2);
+        const exp=Date.now()+1000*60*60*24*30;
+        const tokens=Object.assign({},sessionTokens||{});
+        tokens[sid]={uid:u.id,username:u.username,role:u.role,exp};
+        setSessionTokens(tokens);
+        localStorage.setItem("nwgd_sid",sid);
+        setSession({uid:u.id,username:u.username,role:u.role,lastActivity:Date.now()});
+        return {ok:true};
+      }
+      function logout(){
+        const sid=localStorage.getItem("nwgd_sid");
+        if(sid){
+          const copy=Object.assign({},sessionTokens||{});
+          delete copy[sid];
+          setSessionTokens(copy);
+          localStorage.removeItem("nwgd_sid");
+        }
+        setSession(null);
+      }
+      // revive session
+      useEffect(()=>{(async()=>{
+        try{
+          const sid=localStorage.getItem("nwgd_sid");
+          if(!sid) return;
+          const tokens=await kvGet("nwgd_session_tokens");
+          const t=tokens && tokens[sid];
+          if(t && t.exp>Date.now()){
+            setSession({uid:t.uid,username:t.username,role:t.role,lastActivity:Date.now()});
+          }
+        }catch(e){}
+      })()},[]);
+      return {users,setUsers,session,setSession,login,logout,booted};
+    }
+
+    // -------- Data: projects + fx --------
+    function useProjects(){ return useServerState("nwgd_projects", []); }
+    function useFx(){ return useServerState("nwgd_fx", [{date: todayISO(), usd:5.0, eur:5.35}]); }
+    function rateFor(cur, settleDate, manual, fxRows){
+      if(cur==="LYD") return 1;
+      if(manual && manual>0) return manual;
+      if(!settleDate) return null;
+      const row = (fxRows||[]).find(r=>r.date===settleDate);
+      if(!row) return null;
+      if(cur==="USD") return num(row.usd);
+      if(cur==="EUR") return num(row.eur);
+      return null;
+    }
+
+    // -------- Minimal UI just to ensure page renders --------
+    function Login({onLogin}){
+      const [u,setU]=React.useState("admin"), [p,setP]=React.useState("admin123"), [msg,setMsg]=React.useState("");
+      return (
+        <div className="min-h-screen flex items-center justify-center p-6">
+          <div className="w-[420px] max-w-[95vw] space-y-4">
+            <div className="text-center">
+              <div className="mx-auto h-16 w-16 rounded-full bg-slate-200 flex items-center justify-center font-bold">NW</div>
+              <div className="text-2xl font-bold mt-2">تسجيل الدخول</div>
+            </div>
+            <div className="bg-white rounded-2xl shadow p-4 space-y-3">
+              <input className="w-full border rounded-xl px-3 py-2" placeholder="اسم المستخدم" value={u} onChange={e=>setU(e.target.value)}/>
+              <input type="password" className="w-full border rounded-xl px-3 py-2" placeholder="كلمة المرور" value={p} onChange={e=>setP(e.target.value)}/>
+              {msg && <div className="text-rose-600 text-sm">{msg}</div>}
+              <button className="w-full btn btn-primary" onClick={async()=>{ const r=await onLogin(u,p); if(!r.ok) setMsg(r.msg); }}>دخول</button>
+            </div>
+            <div className="text-center text-xs text-slate-500">الخادم مشترك – التوكن مضبوط</div>
+          </div>
+        </div>
+      );
+    }
+
+    function App(){
+      const auth = useAuth();
+      const [projects,setProjects] = useProjects();
+      const [fx,setFx]=useFx();
+
+      if(!auth.booted) return <div className="p-6">...</div>;
+      if(!auth.session) return <Login onLogin={auth.login}/>;
+
+      // Very small visible app (we can expand after it renders fine)
+      const total=useMemo(()=>projects.reduce((s,p)=>s+(p.currency==="LYD"?num(p.bidValue): (rateFor(p.currency,p.settlementDate,null,fx)||0)*num(p.bidValue)),0),[projects,fx]);
+      return (
+        <div className="max-w-5xl mx-auto p-4 space-y-6">
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-bold">لوحة بسيطة (تشخيص)</h1>
+            <div className="flex gap-2">
+              <button className="btn" onClick={auth.logout}>خروج</button>
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-3">
+            <div className="bg-white rounded-2xl shadow p-4">
+              <div className="text-sm text-slate-500">عدد المشاريع</div>
+              <div className="text-2xl font-bold mt-1">{projects.length}</div>
+            </div>
+            <div className="bg-white rounded-2xl shadow p-4">
+              <div className="text-sm text-slate-500">إجمالي العطاء (LYD)</div>
+              <div className="text-2xl font-bold mt-1 tabular-nums">{total.toLocaleString()}</div>
+            </div>
+            <div className="bg-white rounded-2xl shadow p-4">
+              <div className="text-sm text-slate-500">FX أيام</div>
+              <div className="text-2xl font-bold mt-1">{fx.length}</div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow p-4 space-y-3">
+            <div className="font-semibold">إضافة مشروع (اختبار)</div>
+            <button className="btn btn-primary" onClick={()=>{
+              const id = (projects.at(-1)?.id||0)+1;
+              const np = {id, name:"Test "+id, client:"Demo", currency:"LYD", bidValue:1000, payments:[]};
+              setProjects([...projects, np]);
+            }}>+ مشروع تجريبي</button>
+            <div className="text-xs text-slate-500">يفترض أن يظهر هذا المشروع في كل المتصفحات بعد التحديث.</div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>

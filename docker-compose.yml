@@ -1,0 +1,36 @@
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    image: projects-api
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      SECRET_KEY: WLxG1oMgaFGeVADQuo8EYPSJLW2ch7HCsgmCQqliCbVpmzftQvEaYIrZkiBCPObm
+      ORIGINS: http://${DOMAIN},https://${DOMAIN}
+      DATA_PATH: /data
+      SYNC_TOKEN: HkOyJOCgRI3AUnu37tEZLSEoZJvTjv7j6ORlzWWRdciteHz6
+    depends_on:
+      - db
+    volumes:
+      - /opt/nawafed/projects/data:/data
+    ports:
+      - "8001:8000"       # host:container  ← مهم
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    depends_on:
+      - api
+    ports:
+      - "8080:80"         # host:container  ← مهم
+    restart: unless-stopped

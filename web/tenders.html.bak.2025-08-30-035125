@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>إدارة المناقصات – Nawafed</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin="anonymous" src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin="anonymous" src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script crossorigin="anonymous" src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { background:#f8fafc; color:#0f172a }
+    .tabular-nums{font-variant-numeric:tabular-nums}
+  </style>
+</head>
+<body class="min-h-screen">
+  <div id="root"></div>
+
+  <!-- Error overlay -->
+  <script>
+    (function(){
+      if(window.__errOverlayInstalled) return; window.__errOverlayInstalled = true;
+      function show(msg){
+        const d=document.createElement("div");
+        d.style.position="fixed"; d.style.inset="0"; d.style.zIndex=99999; d.style.background="rgba(0,0,0,.85)";
+        d.innerHTML='<div style="max-width:1000px;margin:24px auto;background:#111;color:#fff;border-radius:12px;padding:16px"><h2>JavaScript Error</h2><pre>'+msg+'</pre></div>';
+        document.body.appendChild(d);
+      }
+      window.addEventListener("error", e=>show((e.error&&e.error.stack)||e.message||String(e)));
+      window.addEventListener("unhandledrejection", e=>{
+        const r=e.reason; show("Unhandled promise rejection:\n"+((r&&(r.stack||r.message))||String(r)));
+      });
+    })();
+  </script>
+
+  <script type="text/babel" data-presets="env,react">
+    const FORCED_SERVER = { mode:"server", base:"/api", token:"ChangeMe-LongRandomToken!" };
+    const {useState,useEffect} = React;
+
+    async function kvGet(key){
+      const url = `${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`;
+      const r = await fetch(url);
+      if(!r.ok) throw new Error("kv get failed: "+r.status);
+      const j = await r.json(); return j.value;
+    }
+
+    async function kvPut(key, value){
+      const url = `${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`;
+      const r = await fetch(url, {
+        method:"PUT",
+        headers:{ "Content-Type":"application/json", "x-sync-token": FORCED_SERVER.token },
+        body: JSON.stringify({value})
+      });
+      if(!r.ok) throw new Error("kv put failed: "+r.status);
+    }
+
+    function Page(){
+      const [msg,setMsg] = useState("Connecting...");
+      useEffect(()=>{(async()=>{
+        try{
+          const stamp = new Date().toISOString();
+          await kvPut("tenders_healthcheck", stamp);
+          const v = await kvGet("tenders_healthcheck");
+          setMsg("API connected ✅ — last write: "+v);
+        }catch(e){
+          setMsg("API error: "+e.message);
+        }
+      })()},[]);
+      return (
+        <div className="max-w-3xl mx-auto p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <a href="/index.html" className="px-3 py-2 rounded bg-slate-800 text-white">← المشاريع</a>
+            <h1 className="text-xl font-bold">إدارة المناقصات (نسخة اختبار)</h1>
+          </div>
+          <div className="bg-white rounded-2xl shadow p-4">
+            {msg}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<Page/>);
+  </script>
+</body>
+</html>

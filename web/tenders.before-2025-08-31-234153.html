@@ -1,0 +1,271 @@
+      const readonly = !(state.session.logged && state.session.role==="admin");
+
+      root.innerHTML = `
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-3">
+            <a href="/" class="text-sm text-slate-600 hover:underline">← المشاريع</a>
+            <h1 class="text-xl font-bold">إدارة المناقصات</h1>
+            ${(!state.session.logged)? `<span class="badge" style="background:#fee2e2;color:#991b1b">وضع قراءة فقط — قم بتسجيل الدخول من صفحة المشاريع</span>` : ""}
+            ${(state.session.logged && state.session.role!=="admin")? `<span class="badge" style="background:#fef3c7;color:#92400e">عضو (قراءة فقط)</span>` : ""}
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="notif" class="btn">${state.notifGranted?"التنبيهات مفعلة":"تفعيل التنبيهات"}</button>
+          </div>
+        </div>
+
+        ${(m.nearDeadline>0 || m.upcomingVisits>0)? `
+          <div class="mb-3 flex flex-wrap gap-2">
+            ${m.nearDeadline>0? `<span class="badge" style="background:#fde68a;color:#92400e">قرب انتهاء التقديم: ${m.nearDeadline}</span>`:""}
+            ${m.upcomingVisits>0? `<span class="badge" style="background:#bfdbfe;color:#1e3a8a">زيارات قادمة: ${m.upcomingVisits}</span>`:""}
+          </div>` : ""}
+
+        <div class="grid md:grid-cols-6 gap-3 mb-4">
+          ${card("إجمالي المناقصات", m.total)}
+          ${card("قيد التجهيز", m.draft)}
+          ${card("المشاركة/مقدَّم", m.participating)}
+          ${card("فائزة", m.won)}
+          ${card("خاسرة", m.lost)}
+          ${card("معلّقة/ملغاة", m.onhold + m.canceled)}
+        </div>
+
+        <section class="bg-white rounded-2xl shadow p-3">
+          <div class="flex flex-wrap items-center gap-2 mb-3">
+            <input id="search" class="border rounded px-3 py-2 w-80" placeholder="بحث: المرجع/الاسم/الجهة/النوع/الشخص" value="${escAttr(state.search)}"/>
+            <label class="text-sm text-slate-600 ms-auto">لكل صفحة:</label>
+            <select id="ps" class="border rounded px-2 py-1">
+              ${[25,50,100].map(n=>`<option value="${n}" ${n===state.pageSize?"selected":""}>${n}</option>`).join("")}
+            </select>
+            ${readonly? "" : `<button id="add" class="btn btn-primary">+ إضافة مناقصة</button>`}
+          </div>
+
+          <div class="overflow-auto">
+            <table class="min-w-full text-sm">
+              <thead>
+                <tr class="text-left border-b">
+                  ${["#","المرجع","اسم المناقصة","النوع","الجهة","الشخص","انتهاء التقديم","الزيارة","الحالة","العروض","إجراءات"].map(h=>`<th class="py-2 px-2 whitespace-nowrap">${h}</th>`).join("")}
+                </tr>
+              </thead>
+              <tbody>
+                ${slice.map((t,i)=>`
+                  <tr class="border-b ${rowClass(t.status)}">
+                    <td class="py-2 px-2">${(i+1)+(page-1)*state.pageSize}</td>
+                    <td class="py-2 px-2">${esc(t.reference||"—")}</td>
+                    <td class="py-2 px-2">${esc(t.name||"—")}</td>
+                    <td class="py-2 px-2">${esc(t.type||"—")}</td>
+                    <td class="py-2 px-2">${esc(t.owner||"—")}</td>
+                    <td class="py-2 px-2">${esc(t.person||"—")}</td>
+                    <td class="py-2 px-2">${esc(t.deadline||"—")}</td>
+                    <td class="py-2 px-2">${esc(t.visitDate||"—")}</td>
+                    <td class="py-2 px-2">${esc(statusLabel(t.status))}</td>
+                    <td class="py-2 px-2">
+                      ${(t.techUrl? `<a class="text-sky-700 underline" href="${escAttr(t.techUrl)}" target="_blank">فني</a>`:"—")}
+                      ${(t.finUrl? ` | <a class="text-sky-700 underline" href="${escAttr(t.finUrl)}" target="_blank">مالي</a>`:"")}
+                    </td>
+                    <td class="py-2 px-2">
+                      <div class="flex gap-2">
+                        <button class="btn" data-det="${t.id}">تفاصيل</button>
+                        ${readonly? "" : `<button class="btn btn-danger" data-del="${t.id}">حذف</button>`}
+                      </div>
+                    </td>
+                  </tr>`).join("") || `<tr><td class="py-3 px-2 text-slate-500" colspan="11">لا توجد مناقصات</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="flex items-center justify-between mt-3 text-sm">
+            <div>الصفحة <b>${page}</b> من <b>${pages}</b> — إجمالي العناصر: <b>${total}</b></div>
+            <div class="flex items-center gap-2">
+              <button class="btn" id="first">الأولى</button>
+              <button class="btn" id="prev">السابق</button>
+              <button class="btn" id="next">التالي</button>
+              <button class="btn" id="last">الأخيرة</button>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2 mt-4">
+            <button class="btn" id="expCsv">تصدير CSV</button>
+            <button class="btn" id="expJson">تصدير JSON</button>
+            ${readonly? "" : `
+              <label class="btn">
+                استيراد CSV
+                <input id="impCsv" type="file" accept=".csv,text/csv" style="display:none">
+              </label>
+              <label class="btn">
+                استيراد JSON
+                <input id="impJson" type="file" accept=".json,application/json" style="display:none">
+              </label>
+            `}
+            <button class="btn" id="print">طباعة / PDF</button>
+          </div>
+        </section>
+
+        ${state.modal ? modalHtml(state.editing, readonly) : "" }
+      `;
+
+      // top actions
+      const notifBtn = document.getElementById('notif');
+      if(notifBtn){
+        notifBtn.onclick = async ()=>{
+          if(!("Notification" in window)) return alert("المتصفح لا يدعم التنبيهات.");
+          const p = await Notification.requestPermission();
+          state.notifGranted = (p==="granted");
+          render();
+        };
+      }
+
+      // table controls
+      document.getElementById('search').oninput = e=>{ state.search=e.target.value; state.page=1; render(); };
+      document.getElementById('ps').onchange = e=>{ state.pageSize=Number(e.target.value)||25; state.page=1; render(); };
+
+      const first=document.getElementById('first'), prev=document.getElementById('prev'), next=document.getElementById('next'), last=document.getElementById('last');
+      first.onclick=()=>{state.page=1; render();};
+      prev.onclick =()=>{state.page=Math.max(1,state.page-1); render();};
+      next.onclick =()=>{state.page=Math.min(pages,state.page+1); render();};
+      last.onclick =()=>{state.page=pages; render();};
+
+      const readonly = !(state.session.logged && state.session.role==="admin");
+      if(!readonly){
+        const add=document.getElementById('add');
+        if(add) add.onclick = ()=>{ state.modal=true; state.editing=emptyTender(); render(); };
+      }
+
+      // row buttons
+      slice.forEach(t=>{
+        const detBtn = document.querySelector(`[data-det="${t.id}"]`);
+        if(detBtn) detBtn.onclick = ()=>{ state.modal=true; state.editing=JSON.parse(JSON.stringify(t)); render(); };
+
+        if(!readonly){
+          const delBtn = document.querySelector(`[data-del="${t.id}"]`);
+          if(delBtn) delBtn.onclick = ()=>{ if(confirm("حذف المناقصة؟")){ state.tenders = state.tenders.filter(x=>x.id!==t.id); persist().then(render).catch(e=>alert(e)); } };
+        }
+      });
+
+      // exports / imports / print
+      document.getElementById('expCsv').onclick = exportCsv;
+      document.getElementById('expJson').onclick = exportJson;
+      document.getElementById('print').onclick = ()=>window.print();
+      if(!readonly){
+        const ic = document.getElementById('impCsv');
+        const ij = document.getElementById('impJson');
+        if(ic) ic.onchange = handleImportCsv;
+        if(ij) ij.onchange = handleImportJson;
+      }
+
+      // modal wires
+      if(state.modal){
+        const g=id=>document.getElementById(id);
+        g('m_close').onclick = ()=>{ state.modal=false; state.editing=null; render(); };
+        g('m_cancel').onclick= ()=>{ state.modal=false; state.editing=null; render(); };
+        const readonly = !(state.session.logged && state.session.role==="admin");
+        if(!readonly){
+          g('m_save').onclick   = ()=>{
+            const m = state.editing;
+            m.reference = g('m_ref').value.trim();
+            m.name      = g('m_name').value.trim();
+            m.type      = g('m_type').value.trim();
+            m.owner     = g('m_owner').value.trim();
+            m.person    = g('m_person').value.trim();
+            m.deadline  = g('m_deadline').value;
+            m.visitDate = g('m_visit').value;
+            m.status    = g('m_status').value;
+            m.techUrl   = g('m_tech').value.trim();
+            m.finUrl    = g('m_fin').value.trim();
+            m.notes     = g('m_notes').value;
+
+            const idx = state.tenders.findIndex(x=>x.id===m.id);
+            if(idx>=0) state.tenders[idx]=m; else state.tenders.push(m);
+            persist().then(()=>{ state.modal=false; state.editing=null; render(); }).catch(e=>alert(e));
+          };
+        }
+      }
+    }
+
+    // ===== Export / Import =====
+    function exportJson(){
+      const blob=new Blob([JSON.stringify(state.tenders,null,2)],{type:"application/json"});
+      const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tenders.json"; a.click();
+    }
+    function exportCsv(){
+      const cols = ["id","reference","name","type","owner","person","deadline","visitDate","status","techUrl","finUrl","notes"];
+      const lines = [cols.join(",")].concat(
+        state.tenders.map(t=>cols.map(c=>`"${String(t[c]??"").replace(/"/g,'""')}"`).join(","))
+      );
+      const blob=new Blob([lines.join("\n")],{type:"text/csv;charset=utf-8"});
+      const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tenders.csv"; a.click();
+    }
+    function handleImportJsonFile(file){
+      const fr=new FileReader();
+      fr.onload = ()=>{
+        try{
+          const arr=JSON.parse(fr.result);
+          if(!Array.isArray(arr)) throw new Error("Bad JSON");
+          state.tenders = arr;
+          persist().then(render);
+        }catch(e){ alert("JSON غير صالح"); }
+      };
+      fr.readAsText(file);
+    }
+    function handleImportCsvFile(file){
+      const fr=new FileReader();
+      fr.onload = ()=>{
+        try{
+          const text=fr.result.replace(/\r/g,"");
+          const [head,...rows]=text.split("\n").filter(Boolean);
+          const cols=head.split(",").map(s=>s.trim().replace(/^"|"$/g,""));
+          const idx=(name)=>cols.indexOf(name);
+          const get=(r,name)=>{ const v=r[idx(name)]||""; return v.replace(/^"|"$/g,"").replace(/""/g,'"'); };
+          const arr = rows.map(line=>{
+            const parts = [];
+            // simple CSV split respecting quotes
+            let cur="", inside=false;
+            for(let i=0;i<line.length;i++){
+              const ch=line[i];
+              if(ch==='\"'){ inside=!inside; cur+=ch; }
+              else if(ch===',' && !inside){ parts.push(cur); cur=""; }
+              else cur+=ch;
+            }
+            parts.push(cur);
+            const r = parts;
+
+            return {
+              id: Number(get(r,"id")) || Date.now()+Math.floor(Math.random()*1000),
+              reference: get(r,"reference"),
+              name: get(r,"name"),
+              type: get(r,"type"),
+              owner: get(r,"owner"),
+              person: get(r,"person"),
+              deadline: get(r,"deadline"),
+              visitDate: get(r,"visitDate"),
+              status: get(r,"status")||"draft",
+              techUrl: get(r,"techUrl"),
+              finUrl: get(r,"finUrl"),
+              notes: get(r,"notes"),
+            };
+          });
+          state.tenders = arr;
+          persist().then(render);
+        }catch(e){ alert("CSV غير صالح"); }
+      };
+      fr.readAsText(file);
+    }
+    function handleImportJson(e){ const f=e.target.files[0]; if(f) handleImportJsonFile(f); e.target.value=""; }
+    function handleImportCsv(e){ const f=e.target.files[0]; if(f) handleImportCsvFile(f); e.target.value=""; }
+
+    // ===== Inline alerts & notifications =====
+    function showInlineAlerts(){
+      // already shown as badges in render(); this hook is kept for future inline banners if needed
+    }
+    function maybeBrowserNotify(){
+      if(!state.notifGranted) return;
+      try{
+        const m = metrics(state.tenders);
+        if(m.nearDeadline>0) new Notification("تنبيه مناقصات",{ body:`${m.nearDeadline} مناقصات تقترب من انتهاء التقديم خلال 30 يومًا.` });
+        if(m.upcomingVisits>0) new Notification("تنبيه زيارات",{ body:`${m.upcomingVisits} زيارات ميدانية خلال 14 يومًا.` });
+      }catch(e){}
+    }
+
+    // ===== Boot =====
+    load();
+  </script>
+</body>
+</html>

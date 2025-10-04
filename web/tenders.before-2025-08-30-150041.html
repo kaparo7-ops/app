@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>إدارة المناقصات – Nawafed</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin="anonymous" src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin="anonymous" src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script crossorigin="anonymous" src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { background:#f8fafc; color:#0f172a }
+    .tabular-nums{font-variant-numeric:tabular-nums}
+    .mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:100}
+    .panel{width:900px;max-width:95vw;max-height:90vh;overflow:auto;background:#fff;border-radius:1rem;box-shadow:0 10px 40px rgba(0,0,0,.2)}
+    .btn{padding:.45rem .7rem;border-radius:.65rem;border:1px solid #e2e8f0;background:#fff}
+    .btn-primary{background:#0f172a;color:#fff;border-color:#0f172a}
+    .btn-danger{background:#e11d48;color:#fff;border-color:#e11d48}
+    thead th{position:sticky;top:0;background:#fff;z-index:1}
+    .sticky-right{position:sticky;right:0;background:#fff;z-index:2;box-shadow:-6px 0 6px -6px rgba(0,0,0,.08)}
+  </style>
+</head>
+<body class="min-h-screen">
+  <div id="root"></div>
+
+  <!-- Error overlay -->
+  <script>
+    (function(){
+      if(window.__errOverlayInstalled) return; window.__errOverlayInstalled = true;
+      function show(msg){
+        const d=document.createElement("div");
+        d.style.position="fixed"; d.style.inset="0"; d.style.zIndex=99999; d.style.background="rgba(0,0,0,.85)";
+        d.innerHTML='<div style="max-width:1000px;margin:24px auto;background:#111;color:#fff;border-radius:12px;padding:16px"><h2>JavaScript Error</h2><pre>'+msg+'</pre></div>';
+        document.body.appendChild(d);
+      }
+      window.addEventListener("error", e=>show((e.error&&e.error.stack)||e.message||String(e)));
+      window.addEventListener("unhandledrejection", e=>{
+        const r=e.reason; show("Unhandled promise rejection:\\n"+((r&&(r.stack||r.message))||String(r)));
+      });
+    })();
+  </script>
+
+  <script type="text/babel" data-presets="env,react">
+    // ===== Core =====
+    const FORCED_SERVER = { mode:"server", base:"/api", token:"ChangeMe-LongRandomToken!" };
+    const {useState,useEffect,useMemo,useRef} = React;
+    const todayISO = () => new Date().toISOString().slice(0,10);
+    const num = v => { const n=Number(String(v).replace(/[^0-9.\-]/g,'')); return isNaN(n)?0:n; };
+    const classNames=(...xs)=>xs.filter(Boolean).join(" ");
+
+    // ===== KV helpers =====
+    async function kvGet(key){
+      const url = `${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`;
+      const r = await fetch(url);
+      if(!r.ok) throw new Error("kv get failed: "+r.status);
+      const j = await r.json(); return j.value;
+    }
+    async function kvPut(key, value){
+      const url = `${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`;
+      const r = await fetch(url, {
+        method:"PUT",
+        headers:{ "Content-Type":"application/json", "x-sync-token": FORCED_SERVER.token },
+        body: JSON.stringify({value})
+      });
+      if(!r.ok) throw new Error("kv put failed: "+r.status);
+    }
+    function useServerState(key, initial){
+      const [state,setState]=useState(initial);
+      const bootRef=useRef(false);
+      useEffect(()=>{(async()=>{
+        const remote=await kvGet(key).catch(()=>null);
+        if(remote==null){ setState(initial); await kvPut(key, initial); }
+        else setState(remote);
+        bootRef.current=true;
+      })()},[key]);
+      const save=v=>{ setState(v); kvPut(key,v).catch(e=>{ throw e }); };
+      return [state, save, bootRef];
+    }
+
+    // ===== UI helpers =====
+    function Field({label,children,help}){ return (
+      <label className="space-y-1 block">
+        <div className="text-sm text-slate-600">{label} {help && <span className="text-xs text-slate-400">— {help}</span>}</div>
+        {children}
+      </label>
+    );}
+    function Chip({text,color="slate"}){ 
+      const m={
+        slate:"bg-slate-100 text-slate-700 border-slate-200",
+        green:"bg-emerald-100 text-emerald-800 border-emerald-200",
+        red:"bg-rose-100 text-rose-800 border-rose-200",
+        amber:"bg-amber-100 text-amber-800 border-amber-200"
+      }[color] || "bg-slate-100 text-slate-700 border-slate-200";
+      return <span className={classNames("px-2 py-1 rounded-full text-xs border", m)}>{text}</span>;
+    }
+
+    // ===== Tenders Modal =====
+    function TenderModal({open,onClose,initial,onSave}){
+      if(!open) return null;
+      const src=initial||{};
+      const [f,setF]=useState({
+        title: src.title||"",
+        owner: src.owner||"",
+        submitDate: src.submitDate||todayISO(),
+        deadline: src.deadline||"",
+        status: src.status||"tracking", // tracking | won | lost | pending
+        financialOffer: src.financialOffer ?? "",
+        notes: src.notes || "",
+        links: src.links || ["","",""] // up to 3 links (PDF/Word/etc.)
+      });
+      const set=(k,v)=>setF({...f,[k]:v});
+      const setLink=(i,v)=>{ const c=[...f.links]; c[i]=v; set("links",c); };
+      const valid=f.title.trim().length>0;
+
+      return (
+        <div className="mask" onClick={(e)=>{ if(e.target===e.currentTarget) onClose(); }}>
+          <div className="panel">
+            <div className="p-4 border-b flex items-center justify-between">
+              <h2 className="text-lg font-bold">{initial? "تعديل عطاء":"عطاء جديد"}</h2>
+              <button className="btn" onClick={onClose}>إغلاق</button>
+            </div>
+            <div className="p-4 grid md:grid-cols-2 gap-3">
+              <Field label="اسم المشروع / العطاء"><input className="w-full border rounded-xl px-3 py-2" value={f.title} onChange={e=>set("title",e.target.value)}/></Field>
+              <Field label="الجهة المالكة"><input className="w-full border rounded-xl px-3 py-2" value={f.owner} onChange={e=>set("owner",e.target.value)}/></Field>
+              <Field label="تاريخ التقديم"><input type="date" className="w-full border rounded-xl px-3 py-2" value={f.submitDate} onChange={e=>set("submitDate",e.target.value)}/></Field>
+              <Field label="آخر موعد للتقديم"><input type="date" className="w-full border rounded-xl px-3 py-2" value={f.deadline} onChange={e=>set("deadline",e.target.value)}/></Field>
+              <Field label="الحالة">
+                <select className="w-full border rounded-xl px-3 py-2" value={f.status} onChange={e=>set("status",e.target.value)}>
+                  <option value="tracking">قيد المتابعة</option>
+                  <option value="pending">قيد التقييم</option>
+                  <option value="won">فزنا</option>
+                  <option value="lost">لم نفز</option>
+                </select>
+              </Field>
+              <Field label="العرض المالي (رقم)"><input type="number" className="w-full border rounded-xl px-3 py-2 text-left" value={f.financialOffer} onChange={e=>set("financialOffer",e.target.value)}/></Field>
+              <Field label="روابط المرفقات (PDF/Word)">
+                <div className="space-y-2">
+                  {f.links.map((L,i)=>(
+                    <input key={i} className="w-full border rounded-xl px-3 py-2" placeholder={"https://example.com/file"+(i+1)+".pdf"} value={L} onChange={e=>setLink(i,e.target.value)}/>
+                  ))}
+                </div>
+              </Field>
+              <Field label="ملاحظات"><textarea className="w-full border rounded-xl px-3 py-2" rows="3" value={f.notes} onChange={e=>set("notes",e.target.value)}></textarea></Field>
+            </div>
+            <div className="p-4 border-t flex justify-end gap-2">
+              <button className="btn" onClick={onClose}>إلغاء</button>
+              <button className="btn btn-primary" disabled={!valid} onClick={()=>onSave({
+                title:f.title.trim(), owner:f.owner.trim(), submitDate:f.submitDate||"", deadline:f.deadline||"",
+                status:f.status, financialOffer:num(f.financialOffer)||0, notes:f.notes||"",
+                links:(f.links||[]).filter(Boolean)
+              })}>{initial? "حفظ التعديلات":"حفظ العطاء"}</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ===== Main Page =====
+    function Page(){
+      const [tenders,setTenders] = useServerState("nwgd_tenders", []); // [{id,...}]
+      const [search,setSearch]=useState("");
+      const [status,setStatus]=useState("ALL");
+      const [sortBy,setSortBy]=useState("submitDate"); // submitDate|deadline|owner|title|status|financialOffer
+      const [sortDir,setSortDir]=useState("desc"); // asc|desc
+      const [page,setPage]=useState(1);
+      const [perPage,setPerPage]=useState(25);
+
+      const [open,setOpen]=useState(false);
+      const [editing,setEditing]=useState(null);
+
+      // derived
+      const filtered = useMemo(()=>{
+        let rows = (tenders||[]);
+        if(status!=="ALL") rows = rows.filter(x=>x.status===status);
+        if(search.trim()){
+          const q=search.trim().toLowerCase();
+          rows = rows.filter(x=>[x.title,x.owner,x.notes].some(f=>(f||"").toLowerCase().includes(q)));
+        }
+        rows = [...rows].sort((a,b)=>{
+          const A=a[sortBy]??"", B=b[sortBy]??"";
+          let r = 0;
+          if(sortBy==="financialOffer"){ r = (Number(A)||0) - (Number(B)||0); }
+          else { r = String(A).localeCompare(String(B)); }
+          return sortDir==="asc"? r : -r;
+        });
+        return rows;
+      },[tenders,search,status,sortBy,sortDir]);
+
+      const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
+      const safePage = Math.min(Math.max(1,page), totalPages);
+      const start = (safePage-1)*perPage;
+      const rows = filtered.slice(start, start+perPage);
+
+      function addTender(patch){
+        const id = ((tenders||[]).at(-1)?.id || 0) + 1;
+        setTenders([...(tenders||[]), {id, ...patch}]);
+      }
+      function updateTender(id,patch){
+        setTenders((tenders||[]).map(x=>x.id===id? {...x,...patch}:x));
+      }
+      function removeTender(id){
+        if(!confirm("هل تريد حذف هذا العطاء؟")) return;
+        setTenders((tenders||[]).filter(x=>x.id!==id));
+      }
+
+      // export/import
+      function exportJSON(){
+        const blob = new Blob([JSON.stringify(tenders||[],null,2)], {type:"application/json"});
+        const a=document.createElement("a");
+        a.href=URL.createObjectURL(blob);
+        a.download="tenders-backup.json";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }
+      function importJSON(){
+        const inp=document.createElement("input");
+        inp.type="file"; inp.accept=".json,application/json";
+        inp.onchange=async ()=>{
+          const f=inp.files[0]; if(!f) return;
+          const txt=await f.text();
+          try{
+            const arr=JSON.parse(txt);
+            if(!Array.isArray(arr)) throw new Error("Bad JSON");
+            // تطبيع بسيط
+            const norm = arr.map((x,i)=>({
+              id: Number(x.id)||i+1,
+              title: String(x.title||""),
+              owner: String(x.owner||""),
+              submitDate: x.submitDate||"",
+              deadline: x.deadline||"",
+              status: ["tracking","pending","won","lost"].includes(x.status)? x.status : "tracking",
+              financialOffer: Number(x.financialOffer)||0,
+              notes: String(x.notes||""),
+              links: Array.isArray(x.links)? x.links.filter(Boolean).slice(0,3) : []
+            }));
+            setTenders(norm);
+            alert("تم استيراد المناقصات بنجاح.");
+          }catch(e){ alert("فشل الاستيراد: "+e.message); }
+        };
+        inp.click();
+      }
+
+      const statusChip = s=>{
+        if(s==="won") return <Chip text="فزنا" color="green"/>;
+        if(s==="lost") return <Chip text="لم نفز" color="red"/>;
+        if(s==="pending") return <Chip text="قيد التقييم" color="amber"/>;
+        return <Chip text="قيد المتابعة" color="slate"/>;
+      };
+
+      return (
+        <div className="max-w-7xl mx-auto p-4 space-y-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <a href="/index.html" className="btn">← المشاريع</a>
+              <h1 className="text-xl font-bold">إدارة المناقصات</h1>
+            </div>
+            <div className="flex items-center gap-2">
+              <button className="btn" onClick={exportJSON}>تصدير JSON</button>
+              <button className="btn" onClick={importJSON}>استيراد JSON</button>
+              <button className="btn btn-primary" onClick={()=>{ setEditing(null); setOpen(true); }}>+ عطاء جديد</button>
+            </div>
+          </div>
+
+          <section className="bg-white rounded-2xl shadow p-3 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <input className="px-3 py-2 rounded-xl border bg-white w-72" placeholder="بحث: اسم/جهة/ملاحظة" value={search} onChange={e=>setSearch(e.target.value)}/>
+              <select className="px-3 py-2 rounded-xl border bg-white" value={status} onChange={e=>{ setStatus(e.target.value); setPage(1); }}>
+                <option value="ALL">كل الحالات</option>
+                <option value="tracking">قيد المتابعة</option>
+                <option value="pending">قيد التقييم</option>
+                <option value="won">فزنا</option>
+                <option value="lost">لم نفز</option>
+              </select>
+              <select className="px-3 py-2 rounded-xl border bg-white" value={sortBy} onChange={e=>setSortBy(e.target.value)}>
+                <option value="submitDate">فرز: تاريخ التقديم</option>
+                <option value="deadline">فرز: آخر موعد</option>
+                <option value="owner">فرز: الجهة</option>
+                <option value="title">فرز: الاسم</option>
+                <option value="status">فرز: الحالة</option>
+                <option value="financialOffer">فرز: العرض المالي</option>
+              </select>
+              <select className="px-3 py-2 rounded-xl border bg-white" value={sortDir} onChange={e=>setSortDir(e.target.value)}>
+                <option value="desc">تنازلي</option>
+                <option value="asc">تصاعدي</option>
+              </select>
+              <div className="ms-auto flex items-center gap-2">
+                <select className="px-3 py-2 rounded-xl border bg-white" value={perPage} onChange={e=>{ setPerPage(Number(e.target.value)||25); setPage(1); }}>
+                  <option value="25">عرض 25</option>
+                  <option value="50">عرض 50</option>
+                  <option value="100">عرض 100</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="overflow-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left border-b">
+                    {["#","اسم العطاء","الجهة","ت.التقديم","آخر موعد","الحالة","العرض المالي","مرفقات","إجراءات"].map((h,i)=>{
+                      const cls = i===8? "sticky-right py-2 px-2 whitespace-nowrap" : "py-2 px-2 whitespace-nowrap";
+                      return <th key={h} className={cls}>{h}</th>;
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(t=>(
+                    <tr key={t.id} className="border-b last:border-0">
+                      <td className="py-2 px-2">{t.id}</td>
+                      <td className="py-2 px-2">{t.title||"—"}</td>
+                      <td className="py-2 px-2">{t.owner||"—"}</td>
+                      <td className="py-2 px-2">{t.submitDate||"—"}</td>
+                      <td className="py-2 px-2">{t.deadline||"—"}</td>
+                      <td className="py-2 px-2">{statusChip(t.status)}</td>
+                      <td className="py-2 px-2 tabular-nums">{(t.financialOffer??0).toLocaleString()}</td>
+                      <td className="py-2 px-2">
+                        <div className="flex flex-wrap gap-1">
+                          {(t.links||[]).map((L,i)=><a key={i} href={L} target="_blank" className="underline text-slate-700">رابط {i+1}</a>)}
+                          {(!t.links||t.links.length===0) && <span className="text-slate-400">—</span>}
+                        </div>
+                      </td>
+                      <td className="py-2 px-2 sticky-right">
+                        <div className="flex gap-1">
+                          <button className="btn" onClick={()=>{ setEditing(t); setOpen(true); }}>تعديل</button>
+                          <button className="btn btn-danger" onClick={()=>removeTender(t.id)}>حذف</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {rows.length===0 && (
+                    <tr><td colSpan="9" className="py-6 text-center text-slate-500">لا توجد عناصر مطابقة.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination controls */}
+            <div className="flex items-center justify-between mt-3 text-sm">
+              <div>الصفحة <b>{safePage}</b> من <b>{totalPages}</b> — إجمالي العناصر: <b>{filtered.length}</b></div>
+              <div className="flex items-center gap-2">
+                <button className="btn" disabled={safePage<=1} onClick={()=>setPage(1)}>الأولى</button>
+                <button className="btn" disabled={safePage<=1} onClick={()=>setPage(safePage-1)}>السابق</button>
+                <button className="btn" disabled={safePage>=totalPages} onClick={()=>setPage(safePage+1)}>التالي</button>
+                <button className="btn" disabled={safePage>=totalPages} onClick={()=>setPage(totalPages)}>الأخيرة</button>
+              </div>
+            </div>
+          </section>
+
+          <TenderModal open={open} onClose={()=>setOpen(false)} initial={editing} onSave={(patch)=>{
+            if(editing){ updateTender(editing.id, patch); }
+            else { addTender(patch); }
+            setOpen(false); setEditing(null);
+          }}/>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<Page/>);
+  </script>
+</body>
+</html>

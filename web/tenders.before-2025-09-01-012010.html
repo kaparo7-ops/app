@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>إدارة المناقصات</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .tabular-nums { font-variant-numeric: tabular-nums }
+    .btn { padding:.5rem .75rem; border-radius:.6rem; border:1px solid #e2e8f0; background:#fff }
+    .btn-primary { background:#0f172a; color:#fff; border-color:#0f172a }
+    .btn-danger  { background:#e11d48; color:#fff; border-color:#e11d48 }
+    .btn-ghost   { background:transparent; border-color:transparent }
+    .mask{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:100}
+    .panel{width:900px;max-width:95vw;max-height:90vh;overflow:auto;background:#fff;border-radius:1rem;box-shadow:0 10px 40px rgba(0,0,0,.2)}
+    .badge{font-size:.75rem;padding:.2rem .5rem;border-radius:.5rem}
+    .badge-warn{background:#fef3c7;color:#92400e}
+    .badge-info{background:#e0f2fe;color:#075985}
+    /* صفوف ملوّنة حسب الحالة */
+    .row-won{background:#ecfdf5}     /* فائزة = أخضر فاتح */
+    .row-lost{background:#fef2f2}    /* خاسرة = أحمر فاتح */
+    .row-part{background:#eff6ff}    /* مشاركة = أزرق فاتح */
+    .row-draft{background:#ffffff}   /* قيد التجهيز = أبيض */
+    .row-onhold{background:#fafafa}  /* معلّقة/ملغاة = رمادي فاتح */
+    /* شارة حالة داخل الخلية */
+    .st-chip{display:inline-flex;align-items:center;gap:.35rem;padding:.15rem .5rem;border-radius:999px;font-size:.75rem}
+    .st-win {background:#10b9811a;color:#065f46;border:1px solid #10b98155}
+    .st-lost{background:#ef44441a;color:#7f1d1d;border:1px solid #ef444455}
+    .st-part{background:#3b82f61a;color:#1e40af;border:1px solid #3b82f655}
+    .st-draft{background:#e5e7eb;color:#111827;border:1px solid #cbd5e1}
+    .st-hold{background:#f3f4f6;color:#374151;border:1px solid #e5e7eb}
+    .sticky-right{position:sticky;right:0;background:#fff;box-shadow:-6px 0 6px -6px rgba(0,0,0,.08)}
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900">
+  <div id="root" class="max-w-7xl mx-auto p-4 space-y-6"></div>
+
+  <script>
+    // ===== Error overlay
+    (function(){
+      if(window.__errOverlayInstalled) return; window.__errOverlayInstalled = true;
+      function show(msg){
+        const d=document.createElement("div");
+        d.style.position="fixed"; d.style.inset="0"; d.style.zIndex=99999; d.style.background="rgba(0,0,0,.85)";
+        d.innerHTML='<div style="max-width:1000px;margin:24px auto;background:#111;color:#fff;border-radius:12px;padding:16px;direction:ltr;"><h2 style="margin:0 0 8px">JavaScript Error</h2><pre>'+msg+'</pre></div>';
+        document.body.appendChild(d);
+      }
+      window.addEventListener("error", e=>show((e.error&&e.error.stack)||e.message||String(e)));
+      window.addEventListener("unhandledrejection", e=>{
+        const r=e.reason; show("Unhandled promise rejection:\\n"+((r&&(r.stack||r.message))||String(r)));
+      });
+    })();
+
+    // ===== Backend config
+    const FORCED_SERVER = { base:"/api", token:"ChangeMe-LongRandomToken!" }; // <== replace with sed
+
+    // ===== Utils
+    const esc = s => String(s??"");
+    const escAttr = s => String(s??"").replace(/"/g,'&quot;');
+    const fmtNum = (n) => (n==null||isNaN(n))? "—" : Number(n).toLocaleString();
+    const todayISO = ()=> new Date().toISOString().slice(0,10);
+    const daysDiff = (a,b)=> Math.round((new Date(a)-new Date(b))/86400000);
+    const CURRENCIES=["LYD","USD","EUR"];
+    const STATUS = ["قيد التجهيز","مشاركة","فائزة","خاسرة","معلّقة","ملغاة"];
+
+    // ===== KV
+    async function kvGet(key){
+      const r = await fetch(`${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`);
+      if(!r.ok) throw new Error("kv get failed: "+r.status);
+      const j = await r.json(); return j.value;
+    }
+    async function kvPut(key, value){
+      const r = await fetch(`${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`, {
+        method:"PUT",
+        headers:{ "Content-Type":"application/json", "x-sync-token": FORCED_SERVER.token },
+        body: JSON.stringify({value})
+      });
+      if(!r.ok) throw new Error("kv put failed: "+r.status);
+    }
+
+    // ===== State
+    const state = {
+      session: { logged:false, role:"guest", username:"" },
+      tenders: [],
+      search: "",
+      filterStatus: "ALL",
+      filterOwner: "ALL",
+      page: 1,
+      pageSize: 25,
+      view: "list", // list | reports
+      notifGranted: false,
+      modal: false,
+      editing: null,
+    };
+    function emptyTender(){
+      return {
+        id: Date.now(),
+        reference: "",
+        name: "",
+        type: "",
+        owner: "",
+        person: "",
+        deadline: "",
+        visitDate: "",
+        status: "قيد التجهيز",
+        participateConfirmed: false,
+        participateDate: "",
+        participateAmount: "",
+        participateCurrency: "LYD",
+        techUrl: "",
+        finUrl: "",
+        notes: ""
+      };
+    }
+
+    // ===== Session
+    async function loadSession(){
+      try{
+        const sess = await kvGet("nwgd_session").catch(()=>null);
+        if(sess && sess.username){
+          state.session = { logged:true, role: sess.role || "member", username: sess.username };
+        }else{
+          state.session = { logged:false, role:"guest", username:"" };
+        }
+      }catch{ state.session = { logged:false, role:"guest", username:"" }; }
+    }
+
+    // ===== Data
+    async function loadTenders(){ state.tenders = Array.isArray(await kvGet("nwgd_tenders_v2").catch(()=>null)) ? await kvGet("nwgd_tenders_v2").catch(()=>[]) : []; }
+    async function persist(){ await kvPut("nwgd_tenders_v2", state.tenders); }
+
+    // ===== Metrics
+    function computeMetrics(arr){
+      const now = todayISO();
+      const nearDeadline = arr.filter(t=> t.deadline && daysDiff(t.deadline, now) <= 30 && daysDiff(t.deadline, now) >= 0 ).length;
+      const upcomingVisits = arr.filter(t=> t.visitDate && daysDiff(t.visitDate, now) <= 14 && daysDiff(t.visitDate, now) >= 0 ).length;
+      const total = arr.length;
+      const draft = arr.filter(t=>t.status==="قيد التجهيز").length;
+      const participating = arr.filter(t=>t.status==="مشاركة").length;
+      const won = arr.filter(t=>t.status==="فائزة").length;
+      const lost = arr.filter(t=>t.status==="خاسرة").length;
+      const onhold = arr.filter(t=>t.status==="معلّقة").length;
+      const canceled = arr.filter(t=>t.status==="ملغاة").length;
+      return { total,draft,participating,won,lost,onhold,canceled,nearDeadline,upcomingVisits };
+    }
+
+    // ===== Reports
+    function buildOwnerReport(arr){
+      const map = {};
+      arr.forEach(t=>{
+        if(t.status!=="مشاركة") return;
+        const owner = t.owner||"—";
+        if(!map[owner]) map[owner] = { owner, count:0, sums:{} };
+        map[owner].count++;
+        const cur = t.participateCurrency || "LYD";
+        const amt = Number(t.participateAmount||0) || 0;
+        map[owner].sums[cur] = (map[owner].sums[cur]||0) + amt;
+      });
+      return Object.values(map).sort((a,b)=> (a.owner||"").localeCompare(b.owner||""));
+    }
+
+    // ===== UI helpers
+    function statusClass(s){
+      if(s==="فائزة") return "row-won";
+      if(s==="خاسرة") return "row-lost";
+      if(s==="مشاركة") return "row-part";
+      if(s==="معلّقة"||s==="ملغاة") return "row-onhold";
+      return "row-draft";
+    }
+    function statusChip(s){
+      if(s==="فائزة")   return `<span class="st-chip st-win">فائزة</span>`;
+      if(s==="خاسرة")   return `<span class="st-chip st-lost">خاسرة</span>`;
+      if(s==="مشاركة")  return `<span class="st-chip st-part">مشاركة</span>`;
+      if(s==="معلّقة")  return `<span class="st-chip st-hold">معلّقة</span>`;
+      if(s==="ملغاة")   return `<span class="st-chip st-hold">ملغاة</span>`;
+      return `<span class="st-chip st-draft">قيد التجهيز</span>`;
+    }
+    function card(title,value){
+      return `<div class="bg-white rounded-2xl shadow p-4">
+        <div class="text-sm text-slate-500">${title}</div>
+        <div class="text-2xl font-bold mt-1 tabular-nums text-left">${fmtNum(value)}</div>
+      </div>`;
+    }
+    function rowSubline(t){
+      if(t.participateConfirmed){
+        const amt = t.participateAmount? Number(t.participateAmount).toLocaleString() : "—";
+        const cur = t.participateCurrency || "LYD";
+        const d = t.participateDate || "—";
+        return `<div class="text-xs text-slate-500 mt-1">عرض: ${amt} ${esc(cur)} — ${esc(d)}</div>`;
+      }
+      return "";
+    }
+
+    function topBarHTML(m){
+      const canSeeProjects = (state.session.logged && state.session.role==="admin");
+      const notifBtn = state.notifGranted ? "التنبيهات مُفعّلة" : "تفعيل التنبيهات";
+      return `
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            ${canSeeProjects ? `<a href="/index.html" class="btn">← المشاريع</a>` : ``}
+            <div class="text-xl font-bold">إدارة المناقصات</div>
+            ${(!state.session.logged)? `<span class="text-xs px-2 py-1 bg-slate-200 rounded">قراءة فقط — ادخل من صفحة المشاريع</span>` : ``}
+            ${(state.session.logged && state.session.role!=="admin")? `<span class="text-xs px-2 py-1 bg-slate-200 rounded">عضو (بدون حذف)</span>` : ``}
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="notif" class="btn">${notifBtn}</button>
+          </div>
+        </div>
+
+        ${(m.nearDeadline>0 || m.upcomingVisits>0)? `
+          <div class="flex gap-2">
+            ${m.nearDeadline>0? `<span class="badge badge-warn">قرب انتهاء التقديم: ${m.nearDeadline}</span>`:""}
+            ${m.upcomingVisits>0? `<span class="badge badge-info">زيارات قادمة: ${m.upcomingVisits}</span>`:""}
+          </div>
+        ` : ""}
+
+        <div class="grid md:grid-cols-6 gap-3">
+          ${card("إجمالي المناقصات", m.total)}
+          ${card("قيد التجهيز", m.draft)}
+          ${card("المشاركة/مقدَّم", m.participating)}
+          ${card("فائزة", m.won)}
+          ${card("خاسرة", m.lost)}
+          ${card("معلّقة/ملغاة", m.onhold + m.canceled)}
+        </div>
+
+        <div class="flex items-center gap-2 mt-2">
+          <button id="tab-list" class="btn ${state.view==='list'?'btn-primary':''}">القائمة</button>
+          <button id="tab-reports" class="btn ${state.view==='reports'?'btn-primary':''}">التقارير</button>
+        </div>
+      `;
+    }
+
+    function listFiltersHTML(uniqueOwners){
+      const stOpts = ['ALL',...STATUS].map(s=>`<option value="${s}" ${state.filterStatus===s?'selected':''}>${s==='ALL'?'كل الحالات':s}</option>`).join("");
+      const ownOpts = ['ALL',...uniqueOwners].map(o=>`<option value="${escAttr(o)}" ${state.filterOwner===o?'selected':''}>${o==='ALL'?'كل الجهات':esc(o)}</option>`).join("");
+      return `
+        <div class="flex flex-wrap items-center gap-2">
+          <input id="search" class="px-3 py-2 rounded-xl border bg-white w-72" placeholder="بحث: المرجع/الاسم/الجهة/النوع/الشخص" value="${escAttr(state.search)}"/>
+          <select id="f_status" class="border rounded-xl px-2 py-2">
+            ${stOpts}
+          </select>
+          <select id="f_owner" class="border rounded-xl px-2 py-2">
+            ${ownOpts}
+          </select>
+          <div class="ms-auto flex items-center gap-2">
+            <label class="text-sm text-slate-600">لكل صفحة:</label>
+            <select id="ps" class="border rounded-xl px-2 py-2">
+              ${[25,50,100].map(n=>`<option ${n===state.pageSize?'selected':''}>${n}</option>`).join("")}
+            </select>
+            ${state.session.logged ? `<button id="add" class="btn btn-primary">+ إضافة مناقصة</button>`:""}
+          </div>
+        </div>
+      `;
+    }
+
+    function listViewHTML(){
+      // owners list for filter
+      const uniqueOwners = Array.from(new Set(state.tenders.map(t=>t.owner||"—"))).filter(Boolean).sort();
+
+      // filters + search
+      const q = state.search.trim().toLowerCase();
+      let filtered = state.tenders.filter(t=>{
+        const passText = !q || [t.reference,t.name,t.owner,t.type,t.person].some(v=> (v||"").toLowerCase().includes(q));
+        const passStatus = (state.filterStatus==="ALL") || (t.status===state.filterStatus);
+        const passOwner = (state.filterOwner==="ALL") || ((t.owner||"—")===state.filterOwner);
+        return passText && passStatus && passOwner;
+      });
+
+      const pageSize = state.pageSize;
+      const total = filtered.length;
+      const pages = Math.max(1, Math.ceil(total / pageSize));
+      const page = Math.min(Math.max(1, state.page), pages);
+      const slice = filtered.slice((page-1)*pageSize, page*pageSize);
+
+      return `
+        ${listFiltersHTML(uniqueOwners)}
+        <div class="bg-white rounded-2xl shadow p-3 overflow-auto mt-3">
+          <table class="min-w-full text-sm">
+            <thead>
+              <tr class="text-left border-b">
+                ${["#","المرجع","اسم المناقصة","النوع","الجهة","الشخص","انتهاء التقديم","الزيارة","الحالة","العروض","إجراءات"].map(h=>`<th class="py-2 px-2 whitespace-nowrap">${h}</th>`).join("")}
+              </tr>
+            </thead>
+            <tbody>
+              ${slice.map((t,i)=>`
+                <tr class="border-b ${statusClass(t.status)}">
+                  <td class="py-2 px-2">${(i+1)+(page-1)*pageSize}</td>
+                  <td class="py-2 px-2">${esc(t.reference||"—")}</td>
+                  <td class="py-2 px-2">
+                    <div>${esc(t.name||"—")}</div>
+                    ${rowSubline(t)}
+                  </td>
+                  <td class="py-2 px-2">${esc(t.type||"—")}</td>
+                  <td class="py-2 px-2">${esc(t.owner||"—")}</td>
+                  <td class="py-2 px-2">${esc(t.person||"—")}</td>
+                  <td class="py-2 px-2">${esc(t.deadline||"—")}</td>
+                  <td class="py-2 px-2">${esc(t.visitDate||"—")}</td>
+                  <td class="py-2 px-2">${statusChip(t.status)}</td>
+                  <td class="py-2 px-2">
+                    ${t.techUrl? `<a class="text-blue-700 underline" href="${escAttr(t.techUrl)}" target="_blank" rel="noopener">فني</a>`:"—"}
+                    ${t.finUrl? ` | <a class="text-blue-700 underline" href="${escAttr(t.finUrl)}" target="_blank" rel="noopener">مالي</a>`:""}
+                  </td>
+                  <td class="py-2 px-2 sticky-right">
+                    <div class="flex gap-1">
+                      <button class="btn" data-det="${t.id}">تفاصيل</button>
+                      ${state.session.role==="admin" ? `<button class="btn btn-danger" data-del="${t.id}">حذف</button>`:``}
+                    </div>
+                  </td>
+                </tr>
+              `).join("") || `
+                <tr><td class="py-6 px-2 text-slate-500" colspan="11">لا توجد مناقصات</td></tr>
+              `}
+            </tbody>
+          </table>
+
+          <div class="flex items-center justify-between mt-3 text-sm">
+            <div>الصفحة <b>${page}</b> من <b>${pages}</b> — إجمالي العناصر: <b>${total}</b></div>
+            <div class="flex items-center gap-2">
+              <button class="btn" id="first">الأولى</button>
+              <button class="btn" id="prev">السابق</button>
+              <button class="btn" id="next">التالي</button>
+              <button class="btn" id="last">الأخيرة</button>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2 mt-3">
+            <button class="btn" id="expCsv">تصدير CSV</button>
+            <button class="btn" id="expJson">تصدير JSON</button>
+            ${state.session.logged ? `
+              <label class="btn">
+                استيراد CSV
+                <input id="impCsv" type="file" accept=".csv" class="hidden"/>
+              </label>
+              <label class="btn">
+                استيراد JSON
+                <input id="impJson" type="file" accept=".json" class="hidden"/>
+              </label>
+            `:""}
+            <button class="btn" id="print">طباعة / PDF</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function reportsViewHTML(){
+      const report = buildOwnerReport(state.tenders);
+      const curSet = new Set();
+      report.forEach(r=> Object.keys(r.sums).forEach(c=>curSet.add(c)));
+      const curCols = Array.from(curSet).sort();
+
+      return `
+        <div class="bg-white rounded-2xl shadow p-3 overflow-auto mt-3">
+          <h3 class="font-semibold mb-2">تجميع حسب الجهة (مشاركة فقط)</h3>
+          <table class="min-w-full text-sm">
+            <thead>
+              <tr class="text-left border-b">
+                <th class="py-2 px-2">الجهة</th>
+                <th class="py-2 px-2">عدد المشاركات</th>
+                ${curCols.map(c=>`<th class="py-2 px-2">${c}</th>`).join("")}
+              </tr>
+            </thead>
+            <tbody>
+              ${report.map(r=>`
+                <tr class="border-b">
+                  <td class="py-2 px-2">${esc(r.owner)}</td>
+                  <td class="py-2 px-2 tabular-nums">${fmtNum(r.count)}</td>
+                  ${curCols.map(c=>`<td class="py-2 px-2 tabular-nums">${fmtNum(r.sums[c])}</td>`).join("")}
+                </tr>
+              `).join("") || `
+                <tr><td class="py-6 px-2 text-slate-500" colspan="${2+curCols.length}">لا توجد بيانات مشاركة</td></tr>
+              `}
+            </tbody>
+          </table>
+
+          <div class="flex items-center gap-2 mt-3">
+            <button class="btn" id="repCsv">تصدير CSV</button>
+            <button class="btn" id="repJson">تصدير JSON</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function modalHTML(m, writeEnabled){
+      return `
+        <div class="mask">
+          <div class="panel">
+            <div class="p-4 border-b flex items-center justify-between">
+              <h2 class="text-lg font-bold">تفاصيل المناقصة</h2>
+              <button id="m_close" class="btn">إغلاق</button>
+            </div>
+            <div class="p-4 grid md:grid-cols-2 gap-3">
+              <label class="space-y-1 block">
+                <div class="text-sm text-slate-600">الرقم المرجعي</div>
+                <input id="m_ref" class="w-full border rounded-xl px-3 py-2" value="${escAttr(m.reference)}" ${writeEnabled?'':'disabled'}/>
+              </label>
+
+              <label class="space-y-1 block">
+                <div class="text-sm text-slate-600">اسم المشروع / المناقصة</div>
+                <input id="m_name" class="w-full border rounded-xl px-3 py-2" value="${escAttr(m.name)}" ${writeEnabled?'':'disabled'}/>
+              </label>
+
+              <label class="space-y-1 block">
+                <div class="text-sm text-slate-600">نوع المناقصة</div>
+                <input id="m_type" class="w-full border rounded-xl px-3 py-2" value="${escAttr(m.type)}" ${writeEnabled?'':'disabled'}/>
+              </label>
+
+              <label class="space-y-1 block">
+                <div class="text-sm text-slate-600">اسم الجهة</div>
+                <input id="m_owner" class="w-full border rounded-xl px-3 py-2" value="${escAttr(m.owner)}" ${writeEnabled?'':'disabled'}/>
+              </label>
+
+              <label class="space-y-1 block">
+                <div class="text-sm text-slate-600">الشخص المكلَّف</div>
+                <input id="m_person" class="w-full border rounded-xl px-3 py-2" value="${escAttr(m.person)}" ${writeEnabled?'':'disabled'}/>
+              </label>
+
+              <label class="space-y-1 block">
+                <div class="text-sm text-slate-600">تاريخ انتهاء التقديم</div>
+                <input id="m_deadline" type="date" class="w-full border rounded-xl px-3 py-2" value="${escAttr(m.deadline)}" ${writeEnabled?'':'disabled'}/>
+              </label>
+
+              <label class="space-y-1 block">
+                <div class="text-sm text-slate-600">موعد الزيارة (اختياري)</div>
+                <input id="m_visit" type="date" class="w-full border rounded-xl px-3 py-2" value="${escAttr(m.visitDate)}" ${writeEnabled?'':'disabled'}/>
+              </label>
+
+              <label class="space-y-1 block md:col-span-2">
+                <div class="text-sm text-slate-600">ملاحظات</div>
+                <textarea id="m_notes" class="w-full border rounded-xl px-3 py-2" rows="3" ${writeEnabled?'':'disabled'}>${esc(m.notes)}</textarea>
+              </label>
+
+              <div class="md:col-span-2 border-t pt-3">
+                <label class="inline-flex items-center gap-2">
+                  <input id="m_confirm" type="checkbox" ${m.participateConfirmed?'checked':''} ${writeEnabled?'':'disabled'}/>
+                  <span class="text-sm">تأكيد المشاركة</span>
+                </label>
+              </div>
+
+              <div class="md:col-span-2 grid md:grid-cols-3 gap-3 ${m.participateConfirmed?'':'opacity-50'}">
+                <label class="space-y-1 block">
+                  <div class="text-sm text-slate-600">تاريخ المشاركة</div>
+                  <input id="m_pdate" type="date" class="w-full border rounded-xl px-3 py-2" value="${escAttr(m.participateDate)}" ${writeEnabled?'':'disabled'}/>
+                </label>
+
+                <label class="space-y-1 block">
+                  <div class="text-sm text-slate-600">قيمة العرض</div>
+                  <input id="m_pamt" type="number" class="w-full border rounded-xl px-3 py-2 text-left" value="${escAttr(m.participateAmount)}" ${writeEnabled?'':'disabled'}/>
+                </label>
+
+                <label class="space-y-1 block">
+                  <div class="text-sm text-slate-600">عملة العرض</div>
+                  <select id="m_pcur" class="w-full border rounded-xl px-3 py-2" ${writeEnabled?'':'disabled'}>
+                    ${CURRENCIES.map(c=>`<option ${m.participateCurrency===c?'selected':''}>${c}</option>`).join("")}
+                  </select>
+                </label>
+
+                <label class="space-y-1 block md:col-span-2">
+                  <div class="text-sm text-slate-600">رابط ملف العرض الفني (خارجي)</div>
+                  <input id="m_tech" class="w-full border rounded-xl px-3 py-2" placeholder="https://..." value="${escAttr(m.techUrl)}" ${writeEnabled?'':'disabled'}/>
+                </label>
+
+                <label class="space-y-1 block md:col-span-2">
+                  <div class="text-sm text-slate-600">رابط ملف العرض المالي (خارجي)</div>
+                  <input id="m_fin" class="w-full border rounded-xl px-3 py-2" placeholder="https://..." value="${escAttr(m.finUrl)}" ${writeEnabled?'':'disabled'}/>
+                </label>
+              </div>
+
+              <label class="space-y-1 block md:col-span-2">
+                <div class="text-sm text-slate-600">الحالة</div>
+                <select id="m_status" class="w-full border rounded-xl px-3 py-2" ${writeEnabled?'':'disabled'}>
+                  ${STATUS.map(s=>`<option ${m.status===s?'selected':''}>${s}</option>`).join("")}
+                </select>
+              </label>
+            </div>
+            <div class="p-4 border-t flex justify-end gap-2">
+              <button id="m_cancel" class="btn">إلغاء</button>
+              ${writeEnabled? `<button id="m_save" class="btn btn-primary">حفظ</button>`:""}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function render(){
+      const root = document.getElementById("root");
+      const m = computeMetrics(state.tenders);
+      root.innerHTML = `
+        ${topBarHTML(m)}
+        ${state.view==="list" ? listViewHTML() : reportsViewHTML()}
+        ${state.modal ? modalHTML(state.editing || emptyTender(), state.session.logged) : ""}
+      `;
+
+      // Tabs
+      const tabList = document.getElementById('tab-list');
+      const tabReports = document.getElementById('tab-reports');
+      if(tabList) tabList.onclick = ()=>{ state.view="list"; render(); };
+      if(tabReports) tabReports.onclick = ()=>{ state.view="reports"; render(); };
+
+      // Notifications
+      const notifBtn = document.getElementById('notif');
+      if(notifBtn){
+        notifBtn.onclick = async ()=>{
+          if(!("Notification" in window)) return alert("المتصفح لا يدعم التنبيهات.");
+          const p = await Notification.requestPermission();
+          state.notifGranted = (p==="granted");
+          if(state.notifGranted){
+            try{
+              if(m.nearDeadline>0) new Notification("تنبيه مناقصات",{ body:`${m.nearDeadline} مناقصات تقترب من انتهاء التقديم خلال 30 يومًا.` });
+              if(m.upcomingVisits>0) new Notification("تنبيه زيارات",{ body:`${m.upcomingVisits} زيارات ميدانية خلال 14 يومًا.` });
+            }catch(e){}
+          }
+          render();
+        };
+      }
+
+      // List wires
+      if(state.view==="list"){
+        const owners = Array.from(new Set(state.tenders.map(t=>t.owner||"—"))).filter(Boolean).sort();
+
+        const onFilterChange = ()=>{
+          state.page=1; render();
+        };
+
+        const s = document.getElementById('search');
+        const fs = document.getElementById('f_status');
+        const fo = document.getElementById('f_owner');
+        s.oninput = e=>{ state.search=e.target.value; state.page=1; render(); };
+        fs.onchange = e=>{ state.filterStatus=e.target.value; onFilterChange(); };
+        fo.onchange = e=>{ state.filterOwner=e.target.value; onFilterChange(); };
+
+        document.getElementById('ps').onchange = e=>{ state.pageSize=Number(e.target.value)||25; state.page=1; render(); };
+
+        const first=document.getElementById('first'), prev=document.getElementById('prev'), next=document.getElementById('next'), last=document.getElementById('last');
+        // recompute pages with current filters + search
+        const q = state.search.trim().toLowerCase();
+        const filteredCount = state.tenders.filter(t=>{
+          const passText = !q || [t.reference,t.name,t.owner,t.type,t.person].some(v=> (v||"").toLowerCase().includes(q));
+          const passStatus = (state.filterStatus==="ALL") || (t.status===state.filterStatus);
+          const passOwner = (state.filterOwner==="ALL") || ((t.owner||"—")===state.filterOwner);
+          return passText && passStatus && passOwner;
+        }).length;
+        const pages = Math.max(1, Math.ceil(filteredCount / state.pageSize));
+        if(first) first.onclick=()=>{state.page=1; render();};
+        if(prev)  prev.onclick =()=>{state.page=Math.max(1,state.page-1); render();};
+        if(next)  next.onclick =()=>{state.page=Math.min(pages,state.page+1); render();};
+        if(last)  last.onclick =()=>{state.page=pages; render();};
+
+        if(state.session.logged){
+          const add = document.getElementById('add');
+          if(add) add.onclick = ()=>{ state.modal=true; state.editing=emptyTender(); render(); };
+        }
+
+        // row buttons
+        // (slice already rendered; reselect with same logic)
+        let filtered = state.tenders.filter(t=>{
+          const passText = !q || [t.reference,t.name,t.owner,t.type,t.person].some(v=> (v||"").toLowerCase().includes(q));
+          const passStatus = (state.filterStatus==="ALL") || (t.status===state.filterStatus);
+          const passOwner = (state.filterOwner==="ALL") || ((t.owner||"—")===state.filterOwner);
+          return passText && passStatus && passOwner;
+        });
+        const slice = filtered.slice((state.page-1)*state.pageSize, state.page*state.pageSize);
+        slice.forEach(t=>{
+          const detBtn = document.querySelector(`[data-det="${t.id}"]`);
+          if(detBtn) detBtn.onclick = ()=>{ state.modal=true; state.editing=JSON.parse(JSON.stringify(t)); render(); };
+          if(state.session.role==="admin"){
+            const delBtn = document.querySelector(`[data-del="${t.id}"]`);
+            if(delBtn) delBtn.onclick = ()=>{
+              if(confirm("حذف المناقصة؟")){
+                state.tenders = state.tenders.filter(x=>x.id!==t.id);
+                persist().then(render).catch(e=>alert(e));
+              }
+            };
+          }
+        });
+
+        // exports/imports
+        document.getElementById('expCsv').onclick = exportCsv;
+        document.getElementById('expJson').onclick = exportJson;
+        document.getElementById('print').onclick = ()=>window.print();
+        if(state.session.logged){
+          const ic = document.getElementById('impCsv');
+          const ij = document.getElementById('impJson');
+          if(ic) ic.onchange = e=> handleImportCsvFile(e.target.files[0]);
+          if(ij) ij.onchange = e=> handleImportJsonFile(e.target.files[0]);
+        }
+      }
+
+      // Reports wires
+      if(state.view==="reports"){
+        const report = buildOwnerReport(state.tenders);
+        document.getElementById('repJson').onclick = ()=>{
+          const blob=new Blob([JSON.stringify(report,null,2)],{type:"application/json"});
+          const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tenders_report_by_owner.json"; a.click();
+        };
+        document.getElementById('repCsv').onclick = ()=>{
+          const curSet = new Set();
+          report.forEach(r=> Object.keys(r.sums).forEach(c=>curSet.add(c)));
+          const cols = ["owner","count",...Array.from(curSet)];
+          const lines = [cols.join(",")].concat(
+            report.map(r=>{
+              return cols.map(c=>{
+                if(c==="owner") return `"${String(r.owner).replace(/"/g,'""')}"`;
+                if(c==="count") return r.count;
+                return r.sums[c] ? r.sums[c] : 0;
+              }).join(",");
+            })
+          );
+          const blob=new Blob([lines.join("\n")],{type:"text/csv;charset=utf-8"});
+          const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tenders_report_by_owner.csv"; a.click();
+        };
+      }
+
+      // Modal wires
+      if(state.modal){
+        const g = id=>document.getElementById(id);
+        g('m_close').onclick = ()=>{ state.modal=false; state.editing=null; render(); };
+        g('m_cancel').onclick= ()=>{ state.modal=false; state.editing=null; render(); };
+        if(state.session.logged){
+          const mm = state.editing || emptyTender();
+          const wireSave = ()=>{
+            const m = state.editing || emptyTender();
+            m.reference = g('m_ref').value.trim();
+            m.name = g('m_name').value.trim();
+            m.type = g('m_type').value.trim();
+            m.owner = g('m_owner').value.trim();
+            m.person = g('m_person').value.trim();
+            m.deadline = g('m_deadline').value;
+            m.visitDate = g('m_visit').value;
+            m.notes = g('m_notes').value;
+            m.participateConfirmed = g('m_confirm').checked;
+            if(m.participateConfirmed){
+              m.participateDate = g('m_pdate').value;
+              m.participateAmount = g('m_pamt').value;
+              m.participateCurrency = g('m_pcur').value;
+              m.techUrl = g('m_tech').value.trim();
+              m.finUrl = g('m_fin').value.trim();
+              if(m.status==="قيد التجهيز") m.status = "مشاركة";
+            }else{
+              m.participateDate=""; m.participateAmount=""; m.participateCurrency="LYD"; m.techUrl=""; m.finUrl="";
+            }
+            const idx = state.tenders.findIndex(x=>x.id===m.id);
+            if(idx>=0) state.tenders[idx]=m; else state.tenders.push(m);
+            persist().then(()=>{ state.modal=false; state.editing=null; render(); }).catch(e=>alert(e));
+          };
+          const sv = g('m_save'); if(sv) sv.onclick = wireSave;
+
+          const chk = g('m_confirm');
+          if(chk) chk.onchange = ()=>{ mm.participateConfirmed = chk.checked; state.editing = mm; render(); };
+        }
+      }
+    }
+
+    // ===== Export / Import
+    function exportJson(){
+      const blob=new Blob([JSON.stringify(state.tenders,null,2)],{type:"application/json"});
+      const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tenders.json"; a.click();
+    }
+    function exportCsv(){
+      const cols = ["id","reference","name","type","owner","person","deadline","visitDate","status","participateConfirmed","participateDate","participateAmount","participateCurrency","techUrl","finUrl","notes"];
+      const lines = [cols.join(",")].concat(
+        state.tenders.map(t=> cols.map(c=>`"${String(t[c]??"").replace(/"/g,'""')}"`).join(","))
+      );
+      const blob=new Blob([lines.join("\n")],{type:"text/csv;charset=utf-8"});
+      const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tenders.csv"; a.click();
+    }
+    function handleImportJsonFile(file){
+      const fr=new FileReader();
+      fr.onload = ()=>{
+        try{
+          const arr=JSON.parse(fr.result);
+          if(!Array.isArray(arr)) throw new Error("Bad JSON");
+          state.tenders = arr;
+          persist().then(render);
+        }catch(e){ alert("JSON غير صالح"); }
+      };
+      fr.readAsText(file);
+    }
+    function handleImportCsvFile(file){
+      const fr=new FileReader();
+      fr.onload = ()=>{
+        try{
+          const text=fr.result.replace(/\r/g,"");
+          const [head,...rows]=text.split("\n").filter(Boolean);
+          const cols=head.split(",").map(s=>s.trim().replace(/^"|"$/g,""));
+          const idx=(name)=>cols.indexOf(name);
+          const parseCsvLine=(line)=>{
+            const out=[]; let cur="",inside=false;
+            for(let i=0;i<line.length;i++){
+              const ch=line[i];
+              if(ch==='\"'){ inside=!inside; continue; }
+              if(ch===',' && !inside){ out.push(cur); cur=""; continue; }
+              cur+=ch;
+            }
+            out.push(cur);
+            return out.map(s=>s.replace(/""/g,'"'));
+          };
+          const arr = rows.map(line=>{
+            const cells = parseCsvLine(line);
+            const get = (name)=>{ const i=idx(name); return i>=0? cells[i] : ""; };
+            return {
+              id: Number(get("id")) || Date.now()+Math.random(),
+              reference: get("reference"),
+              name: get("name"),
+              type: get("type"),
+              owner: get("owner"),
+              person: get("person"),
+              deadline: get("deadline"),
+              visitDate: get("visitDate"),
+              status: get("status")||"قيد التجهيز",
+              participateConfirmed: (get("participateConfirmed")==="true"),
+              participateDate: get("participateDate"),
+              participateAmount: get("participateAmount"),
+              participateCurrency: get("participateCurrency")||"LYD",
+              techUrl: get("techUrl"),
+              finUrl: get("finUrl"),
+              notes: get("notes")
+            };
+          });
+          state.tenders = arr;
+          persist().then(render);
+        }catch(e){ alert("CSV غير صالح"); }
+      };
+      fr.readAsText(file);
+    }
+
+    // ===== Boot
+    (async function boot(){
+      await loadSession();
+      await loadTenders();
+      render();
+    })();
+  </script>
+</body>
+</html>

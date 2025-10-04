@@ -1,0 +1,9 @@
+cd /opt/nawafed/projects
+TOKEN=$(python3 - <<'PY'
+import yaml
+data=yaml.safe_load(open("docker-compose.yml"))
+print(data["services"]["api"]["environment"]["SYNC_TOKEN"])
+PY
+)
+sudo sed -i "s/ChangeMe-LongRandomToken!/${TOKEN//\//\\/}/g" web/index.html
+docker compose build web && docker compose up -d web

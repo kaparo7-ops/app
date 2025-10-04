@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>إدارة المناقصات – Nawafed</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    .tabular-nums{font-variant-numeric:tabular-nums}
+    thead th{position:sticky;top:0;background:#fff;z-index:1}
+    .mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:100}
+    .panel{width:900px;max-width:95vw;max-height:90vh;overflow:auto;background:#fff;border-radius:1rem;box-shadow:0 10px 40px rgba(0,0,0,.2)}
+    .btn{padding:.45rem .7rem;border-radius:.65rem;border:1px solid #e2e8f0;background:#fff}
+    .btn-primary{background:#0f172a;color:#fff;border-color:#0f172a}
+    .btn-danger{background:#e11d48;color:#fff;border-color:#e11d48}
+    .btn-ghost{padding:.3rem .5rem;border-radius:.55rem;border:1px solid transparent;background:transparent}
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900">
+  <div id="root"></div>
+
+  <!-- Error overlay (so page never stays blank) -->
+  <script>
+    (function(){
+      if(window.__errOverlayInstalled) return; window.__errOverlayInstalled = true;
+      function show(msg){
+        const d=document.createElement("div");
+        d.style.position="fixed"; d.style.inset="0"; d.style.zIndex=99999; d.style.background="rgba(0,0,0,.85)";
+        d.innerHTML='<div style="max-width:1000px;margin:24px auto;background:#111;color:#fff;border-radius:12px;padding:16px"><h2 style="margin:0 0 8px">JavaScript Error</h2><pre>'+msg+'</pre></div>';
+        document.body.appendChild(d);
+      }
+      window.addEventListener("error", e=>show((e.error&&e.error.stack)||e.message||String(e)));
+      window.addEventListener("unhandledrejection", e=>{
+        const r=e.reason; show("Unhandled promise rejection:\\n"+((r&&(r.stack||r.message))||String(r)));
+      });
+    })();
+  </script>
+
+  <script type="text/babel" data-presets="env,react">
+    // ===== Core & Utilities =====
+    const FORCED_SERVER = { base:"/api", token:"ChangeMe-LongRandomToken!" };
+    const {useState,useEffect,useMemo,useRef} = React;
+    const todayISO = ()=> new Date().toISOString().slice(0,10);
+    const num = v => { const n=Number(String(v).replace(/[^0-9.\-]/g,'')); return isNaN(n)?0:n; };
+    const classNames=(...xs)=>xs.filter(Boolean).join(" ");
+
+    async function kvGet(key){
+      const url = \`\${FORCED_SERVER.base}/kv/\${encodeURIComponent(key)}?token=\${FORCED_SERVER.token}\`;
+      const r = await fetch(url,{credentials:"include"});
+      if(!r.ok) throw new Error("kv get failed: "+r.status);
+      const j = await r.json(); return j.value;
+    }
+    async function kvPut(key, value){
+      const url = \`\${FORCED_SERVER.base}/kv/\${encodeURIComponent(key)}?token=\${FORCED_SERVER.token}\`;
+      const r = await fetch(url,{method:"PUT",headers:{ "Content-Type":"application/json", "x-sync-token": FORCED_SERVER.token },body:JSON.stringify({value})});
+      if(!r.ok) throw new Error("kv put failed: "+r.status);
+    }
+    function useServerState(key, initial){
+      const [state,setState]=useState(initial);
+      const bootRef=useRef(false);
+      useEffect(()=>{(async()=>{
+        const remote=await kvGet(key).catch(()=>null);
+        if(remote==null){ setState(initial); await kvPut(key, initial); }
+        else setState(remote);
+        bootRef.current=true;
+      })()},[key]);
+      const save=v=>{ setState(v); kvPut(key,v).catch(e=>{throw e}); };
+      return [state, save, bootRef];
+    }
+
+    // ===== Auth (shared with your main app) =====
+    const b64 = u8 => btoa(String.fromCharCode(...u8));
+    const randBytes=(n=16)=>{const a=new Uint8Array(n); (crypto&&crypto.getRandomValues)?crypto.getRandomValues(a):a.fill(7); return a;};
+    const hex = u8 => Array.from(u8).map(b=>b.toString(16).padStart(2,"0")).join("");
+    async function pbkdf2(password,saltB64,iterations=150000,len=32){
+      try{
+        if(!(crypto&&crypto.subtle)) return "PLAINTEXT:"+password;
+        const enc=new TextEncoder();
+        const key=await crypto.subtle.importKey("raw",enc.encode(password),"PBKDF2",false,["deriveBits"]);
+        const bits=await crypto.subtle.deriveBits({name:"PBKDF2",hash:"SHA-256",salt:Uint8Array.from(atob(saltB64),c=>c.charCodeAt(0)),iterations},key,len*8);
+        return hex(new Uint8Array(bits));
+      }catch{ return "PLAINTEXT:"+password; }
+    }
+    function useAuth(){
+      const [users,setUsers]=useServerState("nwgd_users",[]);
+      const [session,setSession]=useServerState("nwgd_session",null);
+      const [booted,setBooted]=useState(false);
+
+      useEffect(()=>{(async()=>{
+        const remote=await kvGet("nwgd_users").catch(()=>null);
+        if(!Array.isArray(remote)||remote.length===0){
+          const salt=b64(randBytes(16));
+          const passHash=await pbkdf2("admin123",salt,150000);
+          await kvPut("nwgd_users",[ {id:1,username:"admin",role:"admin",canSeeProjects:true,canSeeTenders:true,salt,iterations:150000,passHash} ]);
+        }
+        setBooted(true);
+      })()},[]);
+
+      useEffect(()=>{(async()=>{
+        try{
+          const sid=localStorage.getItem("nwgd_sid");
+          if(!sid) return;
+          const tokens=await kvGet("nwgd_session_tokens");
+          const t=tokens && tokens[sid];
+          if(t && t.exp>Date.now()){
+            setSession({uid:t.uid,username:t.username,role:t.role,lastActivity:Date.now()});
+          }
+        }catch(e){}
+      })()},[]);
+
+      return {users,setUsers,session,setSession,booted};
+    }
+
+    // ===== Settings (logo etc) =====
+    function useSettings(){ return useServerState("nwgd_settings",{logoUrl:"",logoSize:56, defaultLanding:"projects"}); }
+
+    // ===== UI helpers =====
+    function Field({label,children,help}){ return (
+      <label className="space-y-1 block">
+        <div className="text-sm text-slate-600">{label} {help && <span className="text-xs text-slate-400">— {help}</span>}</div>
+        {children}
+      </label>
+    );}
+    function Card({title,value}){ return <div className="bg-white rounded-2xl shadow p-4">
+      <div className="text-sm text-slate-500">{title}</div>
+      <div className="text-2xl font-bold mt-1 tabular-nums text-left">{(value??0).toLocaleString? (value??0).toLocaleString(): String(value??"")}</div>
+    </div>; }
+
+    // ===== Tenders data =====
+    function useTenders(){ return useServerState("nwgd_tenders",[]); }
+
+    // ===== Export helpers =====
+    function download(filename, text, mime="application/octet-stream"){
+      const blob=new Blob([text],{type:mime});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement("a"); a.href=url; a.download=filename; a.click();
+      setTimeout(()=>URL.revokeObjectURL(url),5000);
+    }
+    function tendersToCSV(rows){
+      const headers=["id","title","tenderRef","owner","category","location","deadlineDate","submissionDate","financialOffer","financialCurrency","technicalOfferNote","status","decisionDate","resultReason","linkedProjectId","tags"];
+      const esc=s=>('"'+String(s??"").replace(/"/g,'""')+'"');
+      const lines=[headers.join(",")];
+      (rows||[]).forEach(r=>{
+        lines.push(headers.map(h=>{
+          const v=h==="tags" ? (r.tags||[]).join("|") : r[h];
+          return esc(v);
+        }).join(","));
+      });
+      return lines.join("\n");
+    }
+
+    // ===== Modals =====
+    function TenderModal({open,onClose,initial,onSave}){
+      if(!open) return null;
+      const src=initial||{};
+      const [f,setF]=useState({
+        title:src.title||"", tenderRef:src.tenderRef||"", owner:src.owner||"",
+        category:src.category||"", location:src.location||"",
+        deadlineDate:src.deadlineDate||"", submissionDate:src.submissionDate||"",
+        financialOffer: src.financialOffer ?? "", financialCurrency: src.financialCurrency || "LYD",
+        technicalOfferNote: src.technicalOfferNote || "",
+        status: src.status || "draft",
+        decisionDate: src.decisionDate || "", resultReason: src.resultReason || "",
+        tags: Array.isArray(src.tags)? src.tags.join(",") : (src.tags||"")
+      });
+      const set=(k,v)=>setF({...f,[k]:v});
+      return (
+        <div className="mask" onClick={(e)=>{ if(e.target===e.currentTarget) onClose(); }}>
+          <div className="panel">
+            <div className="p-4 border-b flex items-center justify-between">
+              <h2 className="text-lg font-bold">{initial? "تعديل مناقصة":"مناقصة جديدة"}</h2>
+              <button className="btn" onClick={onClose}>إغلاق</button>
+            </div>
+            <div className="p-4 grid md:grid-cols-2 gap-3">
+              <Field label="عنوان المناقصة"><input className="w-full border rounded-xl px-3 py-2" value={f.title} onChange={e=>set('title',e.target.value)}/></Field>
+              <Field label="المرجع/الرمز"><input className="w-full border rounded-xl px-3 py-2" value={f.tenderRef} onChange={e=>set('tenderRef',e.target.value)}/></Field>
+              <Field label="الجهة"><input className="w-full border rounded-xl px-3 py-2" value={f.owner} onChange={e=>set('owner',e.target.value)}/></Field>
+              <Field label="التصنيف"><input className="w-full border rounded-xl px-3 py-2" value={f.category} onChange={e=>set('category',e.target.value)}/></Field>
+              <Field label="الموقع"><input className="w-full border rounded-xl px-3 py-2" value={f.location} onChange={e=>set('location',e.target.value)}/></Field>
+              <Field label="موعد الإقفال"><input type="date" className="w-full border rounded-xl px-3 py-2" value={f.deadlineDate} onChange={e=>set('deadlineDate',e.target.value)}/></Field>
+              <Field label="تاريخ التقديم"><input type="date" className="w-full border rounded-xl px-3 py-2" value={f.submissionDate} onChange={e=>set('submissionDate',e.target.value)}/></Field>
+              <Field label="العرض المالي"><input type="number" className="w-full border rounded-xl px-3 py-2 text-left" value={f.financialOffer} onChange={e=>set('financialOffer',e.target.value)}/></Field>
+              <Field label="عملة العرض"><select className="w-full border rounded-xl px-3 py-2" value={f.financialCurrency} onChange={e=>set('financialCurrency',e.target.value)}><option>LYD</option><option>USD</option><option>EUR</option></select></Field>
+              <Field label="ملاحظات العرض الفني"><input className="w-full border rounded-xl px-3 py-2" value={f.technicalOfferNote} onChange={e=>set('technicalOfferNote',e.target.value)}/></Field>
+              <Field label="الحالة"><select className="w-full border rounded-xl px-3 py-2" value={f.status} onChange={e=>set('status',e.target.value)}><option value="draft">مسودة</option><option value="submitted">تم التقديم</option><option value="under_review">قيد المراجعة</option><option value="won">فائز</option><option value="lost">خاسر</option><option value="cancelled">ملغاة</option></select></Field>
+              <Field label="تاريخ القرار"><input type="date" className="w-full border rounded-xl px-3 py-2" value={f.decisionDate} onChange={e=>set('decisionDate',e.target.value)}/></Field>
+              <Field label="سبب النتيجة"><input className="w-full border rounded-xl px-3 py-2" value={f.resultReason} onChange={e=>set('resultReason',e.target.value)}/></Field>
+              <Field label="وسوم (مفصولة بفاصلة)"><input className="w-full border rounded-xl px-3 py-2" value={f.tags} onChange={e=>set('tags',e.target.value)}/></Field>
+            </div>
+            <div className="p-4 border-t flex justify-end gap-2">
+              <button className="btn" onClick={onClose}>إلغاء</button>
+              <button className="btn btn-primary" onClick={()=>{
+                if(!f.title){ alert("أدخل عنوان المناقصة"); return; }
+                const patch={
+                  title:f.title, tenderRef:f.tenderRef||"", owner:f.owner||"",
+                  category:f.category||"", location:f.location||"",
+                  deadlineDate:f.deadlineDate||"", submissionDate:f.submissionDate||"",
+                  financialOffer:num(f.financialOffer)||0, financialCurrency:f.financialCurrency||"LYD",
+                  technicalOfferNote:f.technicalOfferNote||"",
+                  status:f.status||"draft",
+                  decisionDate:f.decisionDate||"", resultReason:f.resultReason||"",
+                  tags: (f.tags||"").split(",").map(s=>s.trim()).filter(Boolean)
+                };
+                onSave(patch);
+                onClose();
+              }}>{initial? "حفظ التعديلات":"حفظ"}</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ===== Tenders UI =====
+    function TendersApp({auth,settings}){
+      const [tenders,setTenders]=useTenders();
+      const [search,setSearch]=useState("");
+      const [statusFilter,setStatusFilter]=useState("ALL");
+      const [page,setPage]=useState(1);
+      const [pageSize,setPageSize]=useState(25);
+      const [openModal,setOpenModal]=useState(false);
+      const [editing,setEditing]=useState(null);
+
+      // Access control: only admin or canSeeTenders
+      const me=(auth.users||[]).find(u=>u.id===auth.session?.uid);
+      const canSee = auth.session && (me?.role==="admin" || me?.canSeeTenders===true);
+      if(!canSee){
+        return (
+          <div className="max-w-3xl mx-auto p-6">
+            <div className="bg-white rounded-2xl shadow p-6">
+              <div className="text-xl font-bold mb-2">لا توجد صلاحية لعرض المناقصات</div>
+              <div className="text-slate-600 mb-4">اطلب من المشرف منحك صلاحية <b>canSeeTenders</b>.</div>
+              <a className="btn" href="/index.html">العودة للمشاريع</a>
+            </div>
+          </div>
+        );
+      }
+
+      // Derived
+      const rows=useMemo(()=>{
+        let r=[...(tenders||[])];
+        if(statusFilter!=="ALL") r=r.filter(x=>x.status===statusFilter);
+        if(search.trim()){
+          const q=search.trim().toLowerCase();
+          r=r.filter(x=>[x.title,x.tenderRef,x.owner,x.category,x.location,(x.tags||[]).join(" ")].some(f=>(f||"").toLowerCase().includes(q)));
+        }
+        return r.sort((a,b)=> (a.deadlineDate||"") < (b.deadlineDate||"") ? -1 : 1);
+      },[tenders,search,statusFilter]);
+
+      // Pagination
+      const totalPages=Math.max(1, Math.ceil(rows.length/Number(pageSize||25)));
+      const safePage=Math.min(Math.max(1,page), totalPages);
+      const start=(safePage-1)*Number(pageSize||25);
+      const view=rows.slice(start, start+Number(pageSize||25));
+
+      // Cards
+      const now=new Date();
+      const openCount=rows.filter(r=>["draft","submitted","under_review"].includes(r.status)).length;
+      const soonClosing=rows.filter(r=>{
+        if(!r.deadlineDate) return false;
+        const d=new Date(r.deadlineDate);
+        const diffDays=Math.ceil((d-now)/86400000);
+        return diffDays>=0 && diffDays<=7;
+      }).length;
+      const won90=rows.filter(r=>{
+        if(r.status!=="won"||!r.decisionDate) return false;
+        const d=new Date(r.decisionDate);
+        return (now-d)<=90*86400000;
+      }).length;
+      const lost90=rows.filter(r=>{
+        if(r.status!=="lost"||!r.decisionDate) return false;
+        const d=new Date(r.decisionDate);
+        return (now-d)<=90*86400000;
+      }).length;
+      const winRate = (won90+lost90)>0 ? Math.round(100*won90/(won90+lost90)) : 0;
+
+      function addTender(patch){
+        const id=((tenders||[]).at(-1)?.id||0)+1;
+        setTenders([...(tenders||[]), {id, ...patch}]);
+      }
+      function updateTender(id,patch){
+        setTenders((tenders||[]).map(t=>t.id===id? {...t,...patch}:t));
+      }
+      function removeTender(id){
+        if(!confirm("حذف المناقصة؟")) return;
+        setTenders((tenders||[]).filter(t=>t.id!==id));
+      }
+
+      function exportJSON(){ download(`tenders-${todayISO()}.json`, JSON.stringify(rows,null,2), "application/json"); }
+      function exportCSV(){ download(`tenders-${todayISO()}.csv`, tendersToCSV(rows), "text/csv"); }
+
+      return (
+        <div className="max-w-7xl mx-auto p-4 space-y-6">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {settings.logoUrl ? <img src={settings.logoUrl} style={{height:(settings.logoSize||56)+"px"}} className="object-contain"/> : <div className="h-12 w-12 bg-slate-200 rounded"></div>}
+              <div className="text-xl font-bold">إدارة المناقصات</div>
+              <a className="text-sm underline text-slate-600" href="/index.html">الذهاب إلى المشاريع</a>
+            </div>
+            <div className="flex items-center gap-2">
+              <button className="btn btn-primary" onClick={()=>{ setEditing(null); setOpenModal(true); }}>+ مناقصة جديدة</button>
+              <button className="btn" onClick={exportCSV}>تصدير CSV</button>
+              <button className="btn" onClick={exportJSON}>تصدير JSON</button>
+            </div>
+          </div>
+
+          {/* Dashboard cards */}
+          <div className="grid md:grid-cols-4 gap-3">
+            <Card title="مناقصات مفتوحة الآن" value={openCount}/>
+            <Card title="تُغلق خلال 7 أيام" value={soonClosing}/>
+            <Card title="مناقصات رابحة (آخر 90 يوم)" value={won90}/>
+            <Card title="معدل الفوز (آخر 90 يوم)" value={winRate + "%"} />
+          </div>
+
+          {/* Filters */}
+          <section className="flex flex-wrap items-center gap-2">
+            <input className="px-3 py-2 rounded-xl border bg-white w-72" placeholder="بحث: عنوان/جهة/مرجع/وسوم" value={search} onChange={e=>setSearch(e.target.value)}/>
+            <select className="px-3 py-2 rounded-xl border bg-white" value={statusFilter} onChange={e=>{setStatusFilter(e.target.value); setPage(1);}}>
+              <option value="ALL">كل الحالات</option>
+              <option value="draft">مسودة</option>
+              <option value="submitted">تم التقديم</option>
+              <option value="under_review">قيد المراجعة</option>
+              <option value="won">فائز</option>
+              <option value="lost">خاسر</option>
+              <option value="cancelled">ملغاة</option>
+            </select>
+            <div className="ms-auto flex items-center gap-2">
+              <label className="text-sm text-slate-600">العناصر لكل صفحة</label>
+              <select className="px-2 py-1 rounded border" value={pageSize} onChange={e=>{setPageSize(Number(e.target.value)||25); setPage(1);}}>
+                <option>25</option><option>50</option><option>100</option>
+              </select>
+            </div>
+          </section>
+
+          {/* Table */}
+          <section className="bg-white rounded-2xl shadow p-3 overflow-auto">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-semibold">جدول المناقصات</h2>
+              <div className="text-sm text-slate-500">عدد السجلات: <b className="tabular-nums">{rows.length}</b></div>
+            </div>
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left border-b">
+                  {["#","العنوان","المرجع","الجهة","الحالة","الإقفال","التقديم","العرض المالي","العملة","وسوم","إجراءات"].map(h=><th key={h} className="py-2 px-2 whitespace-nowrap">{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {view.map(t=>(
+                  <tr key={t.id} className="border-b last:border-0">
+                    <td className="py-2 px-2">{t.id}</td>
+                    <td className="py-2 px-2">{t.title}</td>
+                    <td className="py-2 px-2">{t.tenderRef||"—"}</td>
+                    <td className="py-2 px-2">{t.owner||"—"}</td>
+                    <td className="py-2 px-2">{({draft:"مسودة",submitted:"تم التقديم",under_review:"قيد المراجعة",won:"فائز",lost:"خاسر",cancelled:"ملغاة"})[t.status]||t.status}</td>
+                    <td className="py-2 px-2">{t.deadlineDate||"—"}</td>
+                    <td className="py-2 px-2">{t.submissionDate||"—"}</td>
+                    <td className="py-2 px-2 tabular-nums">{(t.financialOffer??"—")}</td>
+                    <td className="py-2 px-2">{t.financialCurrency||"—"}</td>
+                    <td className="py-2 px-2">{(t.tags||[]).join(", ")||"—"}</td>
+                    <td className="py-2 px-2">
+                      <div className="flex gap-1">
+                        <button className="btn" onClick={()=>{ setEditing(t); setOpenModal(true); }}>تعديل</button>
+                        <button className="btn btn-danger" onClick={()=>removeTender(t.id)}>حذف</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {view.length===0 && <tr><td className="py-4 px-2 text-slate-500" colSpan="11">لا توجد نتائج.</td></tr>}
+              </tbody>
+            </table>
+
+            {/* Pagination */}
+            <div className="flex items-center justify-between mt-3 text-sm">
+              <div>الصفحة <b>{safePage}</b> من <b>{totalPages}</b></div>
+              <div className="flex items-center gap-2">
+                <button className="btn" disabled={safePage<=1} onClick={()=>setPage(1)}>الأولى</button>
+                <button className="btn" disabled={safePage<=1} onClick={()=>setPage(safePage-1)}>السابق</button>
+                <button className="btn" disabled={safePage>=totalPages} onClick={()=>setPage(safePage+1)}>التالي</button>
+                <button className="btn" disabled={safePage>=totalPages} onClick={()=>setPage(totalPages)}>الأخيرة</button>
+              </div>
+            </div>
+          </section>
+
+          <TenderModal
+            open={openModal}
+            onClose={()=>setOpenModal(false)}
+            initial={editing}
+            onSave={(patch)=>{
+              if(editing) updateTender(editing.id, patch);
+              else addTender(patch);
+            }}
+          />
+        </div>
+      );
+    }
+
+    // ===== Shell (reuse session) =====
+    function Shell(){
+      const auth=useAuth();
+      const [settings]=useSettings();
+      if(!auth.booted) return <div className="p-6">...</div>;
+      if(!auth.session){
+        return (
+          <div className="min-h-screen flex items-center justify-center p-6">
+            <div className="bg-white rounded-2xl shadow p-6 w-[420px] max-w-[95vw] space-y-3 text-center">
+              <div className="text-lg font-bold mb-2">يجب تسجيل الدخول من صفحة المشاريع أولاً</div>
+              <a className="btn btn-primary w-full" href="/index.html">الذهاب لصفحة تسجيل الدخول/المشاريع</a>
+            </div>
+          </div>
+        );
+      }
+      return <TendersApp auth={auth} settings={settings}/>;
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<Shell/>);
+  </script>
+</body>
+</html>

@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>نظام متابعة المشاريع – Nawafed</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin="anonymous" src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin="anonymous" src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script crossorigin="anonymous" src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    .tabular-nums{font-variant-numeric:tabular-nums}
+    .mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:100}
+    .panel{width:900px;max-width:95vw;max-height:90vh;overflow:auto;background:#fff;border-radius:1rem;box-shadow:0 10px 40px rgba(0,0,0,.2)}
+    .btn{padding:.45rem .7rem;border-radius:.65rem;border:1px solid #e2e8f0;background:#fff}
+    .btn-primary{background:#0f172a;color:#fff;border-color:#0f172a}
+    .btn-warn{background:#b45309;color:#fff;border-color:#b45309}
+    .btn-danger{background:#e11d48;color:#fff;border-color:#e11d48}
+    thead th{position:sticky;top:0;background:#fff;z-index:1}
+    .table-wrap{overflow:auto}
+    .sticky-right{position:sticky;right:0;background:#fff;z-index:2;box-shadow:-6px 0 6px -6px rgba(0,0,0,.08)}
+    .actions .icon{padding:.2rem .35rem;border-radius:.45rem}
+    .actions .icon:hover{background:#f1f5f9}
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900">
+  <div id="root"></div>
+
+  <!-- Error overlay -->
+  <script>
+    (function(){
+      if(window.__errOverlayInstalled) return; window.__errOverlayInstalled = true;
+      function show(msg){
+        const d=document.createElement("div");
+        d.style.position="fixed"; d.style.inset="0"; d.style.zIndex=99999; d.style.background="rgba(0,0,0,.85)";
+        d.innerHTML='<div style="max-width:1000px;margin:24px auto;background:#111;color:#fff;border-radius:12px;padding:16px"><h2 style="margin:0 0 8px">JavaScript Error</h2><pre>'+String(msg).replace(/[<&]/g,s=>({"<":"&lt;","&":"&amp;"}[s]))+'</pre></div>';
+        document.body.appendChild(d);
+      }
+      window.addEventListener("error", e=>show((e.error&&e.error.stack)||e.message||String(e)));
+      window.addEventListener("unhandledrejection", e=>{
+        const r=e.reason; show("Unhandled promise rejection:\\n"+((r&&(r.stack||r.message))||String(r)));
+      });
+    })();
+  </script>
+
+  <script type="text/babel" data-presets="env,react">
+    // ===== نواة النظام =====
+    const FORCED_SERVER = { mode:"server", base:"/api", token:"ChangeMe-LongRandomToken!" };
+    const {useState,useEffect,useMemo,useRef} = React;
+    const todayISO=()=>new Date().toISOString().slice(0,10);
+    const num=v=>{const n=Number(String(v).replace(/[^0-9.\-]/g,'')); return isNaN(n)?0:n};
+    const classNames=(...xs)=>xs.filter(Boolean).join(" ");
+    const CURRENCIES=["LYD","USD","EUR"];
+
+    // ===== تخزين على الخادم =====
+    async function kvGet(key){
+      const url = `${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`;
+      const r = await fetch(url, { credentials:"include" });
+      if(!r.ok) throw new Error("kv get failed: "+r.status);
+      const j = await r.json(); return j.value;
+    }
+    async function kvPut(key, value){
+      const url = `${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`;
+      const r = await fetch(url, {
+        method:"PUT",
+        headers:{ "Content-Type":"application/json", "x-sync-token": FORCED_SERVER.token },
+        body: JSON.stringify({value})
+      });
+      if(!r.ok) throw new Error("kv put failed: "+r.status);
+    }
+    function useServerState(key, initial){
+      const [state,setState]=useState(initial);
+      const bootRef=useRef(false);
+      useEffect(()=>{(async()=>{
+        const remote=await kvGet(key).catch(e=>{throw e});
+        if(remote==null){ setState(initial); await kvPut(key, initial); }
+        else setState(remote);
+        bootRef.current=true;
+      })()},[key]);
+      const save=v=>{ setState(v); kvPut(key,v).catch(e=>{throw e}); };
+      return [state, save, bootRef];
+    }
+
+    // ===== الدخول =====
+    const b64 = u8 => btoa(String.fromCharCode(...u8));
+    const randBytes=(n=16)=>{const a=new Uint8Array(n); (window.crypto&&crypto.getRandomValues)?crypto.getRandomValues(a):a.fill(7); return a;};
+    const hex = u8 => Array.from(u8).map(b=>b.toString(16).padStart(2,"0")).join("");
+    async function pbkdf2(password,saltB64,iterations=150000,len=32){
+      try{
+        if(!(window.crypto && crypto.subtle)) return "PLAINTEXT:"+password;
+        const enc=new TextEncoder();
+        const key=await crypto.subtle.importKey("raw",enc.encode(password),"PBKDF2",false,["deriveBits"]);
+        const bits=await crypto.subtle.deriveBits({name:"PBKDF2",hash:"SHA-256",salt:Uint8Array.from(atob(saltB64),c=>c.charCodeAt(0)),iterations},key,len*8);
+        return hex(new Uint8Array(bits));
+      }catch{ return "PLAINTEXT:"+password; }
+    }
+    function useAuth(){
+      const [users,setUsers]=useServerState("nwgd_users",[]);
+      const [session,setSession]=useServerState("nwgd_session",null);
+      const [sessionTokens,setSessionTokens]=useServerState("nwgd_session_tokens",{});
+      const [booted,setBooted]=useState(false);
+
+      useEffect(()=>{(async()=>{
+        const remote=await kvGet("nwgd_users").catch(()=>null);
+        if(!Array.isArray(remote)||remote.length===0){
+          const salt=b64(randBytes(16));
+          const passHash=await pbkdf2("admin123",salt,150000);
+          await kvPut("nwgd_users",[ {id:1,username:"admin",role:"admin",salt,iterations:150000,passHash} ]);
+          setUsers([{id:1,username:"admin",role:"admin",salt,iterations:150000,passHash}]);
+        }
+        setBooted(true);
+      })()},[]);
+      async function login(username,password){
+        const u=(users||[]).find(x=>x.username.toLowerCase()===String(username).toLowerCase());
+        if(!u) return {ok:false,msg:"المستخدم غير موجود"};
+        const h=await pbkdf2(password,u.salt,u.iterations||150000);
+        if(h!==u.passHash) return {ok:false,msg:"كلمة المرور غير صحيحة"};
+        const sid='s'+Date.now()+Math.random().toString(36).slice(2);
+        const exp=Date.now()+1000*60*60*24*30;
+        const tokens=Object.assign({},(await kvGet("nwgd_session_tokens"))||{});
+        tokens[sid]={uid:u.id,username:u.username,role:u.role,exp};
+        await kvPut("nwgd_session_tokens",tokens);
+        localStorage.setItem("nwgd_sid",sid);
+        setSession({uid:u.id,username:u.username,role:u.role,lastActivity:Date.now()});
+        return {ok:true};
+      }
+      async function logout(){
+        const sid=localStorage.getItem("nwgd_sid");
+        const tokens=Object.assign({},(await kvGet("nwgd_session_tokens"))||{});
+        delete tokens[sid];
+        await kvPut("nwgd_session_tokens",tokens);
+        localStorage.removeItem("nwgd_sid");
+        setSession(null);
+      }
+      useEffect(()=>{(async()=>{
+        try{
+          const sid=localStorage.getItem("nwgd_sid");
+          if(!sid) return;
+          const tokens=await kvGet("nwgd_session_tokens");
+          const t=tokens&&tokens[sid];
+          if(t && t.exp>Date.now()){
+            setSession({uid:t.uid,username:t.username,role:t.role,lastActivity:Date.now()});
+          }
+        }catch(e){}
+      })()},[]);
+      return {users,setUsers,session,setSession,login,logout,booted};
+    }
+
+    // ===== عناصر واجهة =====
+    function Field({label,children,help}){ return (
+      <label className="space-y-1 block">
+        <div className="text-sm text-slate-600">{label} {help && <span className="text-xs text-slate-400">— {help}</span>}</div>
+        {children}
+      </label>
+    );}
+    function Card({title,value}){ return <div className="bg-white rounded-2xl shadow p-4">
+      <div className="text-sm text-slate-500">{title}</div>
+      <div className="text-2xl font-bold mt-1 tabular-nums text-left">{(value??0).toLocaleString? (value??0).toLocaleString(): String(value??"")}</div>
+    </div>; }
+
+    // ===== نافذة المشروع (عملة + قيمة + FX للعطاء) =====
+    function ProjectModal({open,onClose,initial,onSave}){
+      if(!open) return null;
+      const src=initial||{};
+      const [form,setForm]=useState({
+        name:src.name||"", client:src.client||"", supervisor:src.supervisor||"", po:src.po||"",
+        currency:src.currency||"LYD",
+        bidOriginal: src.bidOriginal ?? "",     // قيمة العطاء بالعملة الأصلية
+        tenderFx: src.tenderFx ?? "",           // سعر صرف العطاء → LYD
+        projectCostLYD: src.projectCostLYD ?? "",
+        assignmentDate: src.assignmentDate || "", invoiceDate: src.invoiceDate || "", settlementDate: src.settlementDate || "",
+        invoiceNumber: src.invoiceNumber || "", deliveryNoteNumber: src.deliveryNoteNumber || "",
+        retentionAmount: src.retention?.amount ?? "", retentionStart: src.retention?.startDate || "", retentionRelease: src.retention?.releaseDate || ""
+      });
+      const set=(k,v)=>setForm({...form,[k]:v});
+
+      // حساب حي لقيمة العطاء بالدينار
+      const computedBidLYD = (() => {
+        const cur = form.currency;
+        const orig = num(form.bidOriginal||0);
+        if(cur==="LYD") return orig;
+        const fx = num(form.tenderFx||0);
+        return fx>0 ? +(orig*fx).toFixed(2) : null;
+      })();
+
+      return (
+        <div className="mask" onClick={(e)=>{ if(e.target===e.currentTarget) onClose(); }}>
+          <div className="panel">
+            <div className="p-4 border-b flex items-center justify-between"><h2 className="text-lg font-bold">{initial?"تعديل مشروع":"مشروع جديد"}</h2><button className="btn" onClick={onClose}>إغلاق</button></div>
+            <div className="p-4 grid md:grid-cols-2 gap-3">
+              <Field label="اسم المشروع"><input className="w-full border rounded-xl px-3 py-2" value={form.name} onChange={e=>set('name',e.target.value)}/></Field>
+              <Field label="الجهة"><input className="w-full border rounded-xl px-3 py-2" value={form.client} onChange={e=>set('client',e.target.value)}/></Field>
+              <Field label="المشرف"><input className="w-full border rounded-xl px-3 py-2" value={form.supervisor} onChange={e=>set('supervisor',e.target.value)}/></Field>
+              <Field label="رقم PO"><input className="w-full border rounded-xl px-3 py-2" value={form.po} onChange={e=>set('po',e.target.value)}/></Field>
+
+              <Field label="عملة العطاء">
+                <select className="w-full border rounded-xl px-3 py-2" value={form.currency} onChange={e=>set('currency',e.target.value)}>
+                  {CURRENCIES.map(c=><option key={c}>{c}</option>)}
+                </select>
+              </Field>
+
+              <Field label="قيمة العطاء (بالعملة)">
+                <input type="number" className="w-full border rounded-xl px-3 py-2 text-left" value={form.bidOriginal} onChange={e=>set('bidOriginal',e.target.value)}/>
+              </Field>
+
+              {form.currency!=="LYD" && (
+                <Field label="سعر صرف العطاء (→ LYD) — يدوي">
+                  <input type="number" step="0.000001" className="w-full border rounded-xl px-3 py-2 text-left" value={form.tenderFx} onChange={e=>set('tenderFx',e.target.value)}/>
+                </Field>
+              )}
+
+              <Field label="قيمة العطاء (LYD) — محسوبة">
+                <input className="w-full border rounded-xl px-3 py-2 text-left bg-slate-50" value={computedBidLYD!=null? computedBidLYD : "—"} readOnly/>
+              </Field>
+
+              <Field label="تكلفة المشروع (LYD)">
+                <input type="number" className="w-full border rounded-xl px-3 py-2 text-left" value={form.projectCostLYD} onChange={e=>set('projectCostLYD',e.target.value)}/>
+              </Field>
+
+              <Field label="تاريخ التكليف"><input type="date" className="w-full border rounded-xl px-3 py-2" value={form.assignmentDate} onChange={e=>set('assignmentDate',e.target.value)}/></Field>
+              <Field label="تاريخ إرسال الفاتورة"><input type="date" className="w-full border rounded-xl px-3 py-2" value={form.invoiceDate} onChange={e=>set('invoiceDate',e.target.value)}/></Field>
+              <Field label="تاريخ التسوية (اختياري)"><input type="date" className="w-full border rounded-xl px-3 py-2" value={form.settlementDate} onChange={e=>set('settlementDate',e.target.value)}/></Field>
+              <Field label="رقم الفاتورة"><input className="w-full border rounded-xl px-3 py-2" value={form.invoiceNumber} onChange={e=>set('invoiceNumber',e.target.value)}/></Field>
+              <Field label="رقم محضر التسليم"><input className="w-full border rounded-xl px-3 py-2" value={form.deliveryNoteNumber} onChange={e=>set('deliveryNoteNumber',e.target.value)}/></Field>
+
+              <Field label="مبلغ الضمان المحتجز (بالعملة)">
+                <input type="number" className="w-full border rounded-xl px-3 py-2 text-left" value={form.retentionAmount} onChange={e=>set('retentionAmount',e.target.value)}/>
+              </Field>
+              <Field label="تاريخ بدء الضمان"><input type="date" className="w-full border rounded-xl px-3 py-2" value={form.retentionStart} onChange={e=>set('retentionStart',e.target.value)}/></Field>
+              <Field label="تاريخ استحقاق الضمان"><input type="date" className="w-full border rounded-xl px-3 py-2" value={form.retentionRelease} onChange={e=>set('retentionRelease',e.target.value)}/></Field>
+            </div>
+            <div className="p-4 border-t flex justify-end gap-2">
+              <button className="btn" onClick={onClose}>إلغاء</button>
+              <button className="btn btn-primary" onClick={()=>{
+                if(!form.name){ alert("ادخل اسم المشروع"); return; }
+                const cur=form.currency;
+                const orig=num(form.bidOriginal||0);
+                let bidValueLYD=0;
+                if(cur==="LYD"){ bidValueLYD=orig; }
+                else{
+                  const fx=num(form.tenderFx||0);
+                  if(!fx){ alert("أدخل سعر صرف العطاء (→ LYD)"); return; }
+                  bidValueLYD=+(orig*fx).toFixed(2);
+                }
+                onSave({
+                  name:form.name, client:form.client||"", supervisor:form.supervisor||"", po:form.po||"",
+                  currency:cur,
+                  bidOriginal:orig,
+                  tenderFx: cur==="LYD"? null : num(form.tenderFx||0),
+                  bidValueLYD,                     // نحفظ القيمة بالLYD
+                  projectCostLYD: num(form.projectCostLYD||0),
+                  assignmentDate:form.assignmentDate||"", invoiceDate:form.invoiceDate||"", settlementDate:form.settlementDate||"",
+                  invoiceNumber:form.invoiceNumber||"", deliveryNoteNumber:form.deliveryNoteNumber||"",
+                  retention:(form.retentionAmount||form.retentionStart||form.retentionRelease)?{amount:num(form.retentionAmount)||0,startDate:form.retentionStart||"",releaseDate:form.retentionRelease||"",paid: initial?.retention?.paid||false}:null
+                });
+                onClose();
+              }}>{initial?"حفظ التعديلات":"حفظ المشروع"}</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ===== نافذة السداد (FX يدوي لكل دفعة) =====
+    function PaymentModal({open,onClose,project,onSave,editing}){
+      if(!open) return null;
+      const preset=project? (project._retentionRelease? {amount:project.retention?.amount||"",settlementDate:project.retention?.releaseDate||todayISO(),type:"retention"} : {}) : {};
+      const [f,setF]=useState({
+        date: editing?.date || todayISO(),
+        amount: editing?.amount ?? preset.amount ?? "",
+        settlementDate: editing?.settlementDate || preset.settlementDate || "",
+        fxManual: editing?.fxManual ?? "",
+        type: editing?.type || preset.type || "regular"
+      });
+      const set=(k,v)=>setF({...f,[k]:v});
+      const valid=num(f.amount)>0;
+      return (
+        <div className="mask" onClick={(e)=>{ if(e.target===e.currentTarget) onClose(); }}>
+          <div className="panel">
+            <div className="p-4 border-b flex items-center justify-between"><h2 className="text-lg font-bold">{editing?"تعديل سداد":"سداد جديد"} – {project?.name||""}</h2><button className="btn" onClick={onClose}>إغلاق</button></div>
+            <div className="p-4 grid md:grid-cols-2 gap-3">
+              <Field label="التاريخ"><input type="date" className="w-full border rounded-xl px-3 py-2" value={f.date} onChange={e=>set('date',e.target.value)}/></Field>
+              <Field label={"المبلغ ("+(project?.currency||"")+")"}><input type="number" className="w-full border rounded-xl px-3 py-2 text-left" value={f.amount} onChange={e=>set('amount',e.target.value)}/></Field>
+              <Field label="تاريخ التسوية"><input type="date" className="w-full border rounded-xl px-3 py-2" value={f.settlementDate} onChange={e=>set('settlementDate',e.target.value)}/></Field>
+              {project?.currency!=="LYD" && (
+                <Field label="FX يدوي (→ LYD)"><input type="number" step="0.000001" className="w-full border rounded-xl px-3 py-2 text-left" value={f.fxManual} onChange={e=>set('fxManual',e.target.value)}/></Field>
+              )}
+              <Field label="نوع السداد">
+                <select className="w-full border rounded-xl px-3 py-2" value={f.type} onChange={e=>set('type',e.target.value)}>
+                  <option value="regular">عادي</option>
+                  <option value="retention">ضمان</option>
+                </select>
+              </Field>
+            </div>
+            <div className="p-4 border-t flex justify-end gap-2">
+              <button className="btn" onClick={onClose}>إلغاء</button>
+              <button className="btn btn-primary" disabled={!valid} onClick={()=>onSave({
+                date:f.date||todayISO(),
+                amount:num(f.amount)||0,
+                settlementDate:f.settlementDate||f.date||todayISO(),
+                fxManual:f.fxManual===""?null:Number(f.fxManual),
+                type:f.type
+              })}>{editing? "حفظ":"إضافة"}</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ===== حسابات الصفوف =====
+    function ProjectsUI({projects,setProjects,auth}){
+      const [filter,setFilter]=useState("ALL");
+      const [search,setSearch]=useState("");
+      const [projOpen,setProjOpen]=useState(false);
+      const [projEditing,setProjEditing]=useState(null);
+      const [payOpen,setPayOpen]=useState(false);
+      const [payEditing,setPayEditing]=useState(null);
+      const [payProject,setPayProject]=useState(null);
+      const [expanded,setExpanded]=useState({});
+
+      const rows=useMemo(()=> (projects||[]).map(p=>{
+        const last=[...(p.payments||[])].sort((a,b)=>(a.date||"")<(b.date||"")?1:-1)[0];
+        const inv=p.invoiceDate||"";
+        const overdue=!last && inv && Math.round((new Date()-new Date(inv))/86400000) > 90;
+
+        const bidLYD = (p.bidValueLYD!=null) ? num(p.bidValueLYD) :
+                       (p.currency==="LYD" ? num(p.bidOriginal||0) : null);
+
+        let rcvLYD=null;
+        if(p.payments?.length){
+          let s=0; p.payments.forEach(pay=>{
+            if(p.currency==="LYD") s+=num(pay.amount);
+            else{
+              const r = (pay.fxManual && pay.fxManual>0) ? pay.fxManual : null;
+              if(r) s += num(pay.amount)*r;
+            }
+          });
+          rcvLYD=+s.toFixed(2);
+        }
+
+        const paid=!!last;
+        const profit=(rcvLYD||0) - (Number(p.projectCostLYD||0));
+        const margin=(rcvLYD && rcvLYD>0) ? +(100*profit/rcvLYD).toFixed(2) : null;
+
+        const r=p.retention; 
+        const retentionDue=r && r.releaseDate && !r.paid && (new Date(r.releaseDate) <= new Date());
+
+        return {...p, overdue, paid, totalLYDBid:bidLYD, totalLYDReceived:rcvLYD, profitLYD:profit, marginPct:margin, retentionDue, lastPayDate:last?.date||null};
+      }),[projects]);
+
+      let filtered=rows;
+      if(filter==="OVERDUE") filtered=filtered.filter(x=>x.overdue);
+      if(filter==="PAID") filtered=filtered.filter(x=>x.paid);
+      if(filter==="UNPAID") filtered=filtered.filter(x=>!x.paid);
+      if(search.trim()){
+        const q=search.trim().toLowerCase();
+        filtered=filtered.filter(x=>[x.name,x.client,x.supervisor,x.po,x.invoiceNumber,x.deliveryNoteNumber].some(f=>(f||"").toLowerCase().includes(q)));
+      }
+
+      const totals=useMemo(()=>{const sum=(a,k)=>a.reduce((x,y)=>x+(y[k]||0),0);
+        return {
+          bid:+sum(rows.filter(x=>x.totalLYDBid!=null),"totalLYDBid").toFixed(2),
+          rcv:+sum(rows.filter(x=>x.totalLYDReceived!=null),"totalLYDReceived").toFixed(2),
+          profit:+sum(rows,"profitLYD").toFixed(2),
+          overdue: rows.filter(x=>x.overdue).length,
+          unpaid: rows.filter(x=>!x.paid).length,
+          paid: rows.filter(x=>x.paid).length
+        };
+      },[rows]);
+
+      function removeProject(id){
+        if(auth.session?.role!=="admin"){ alert("فقط المشرف يستطيع الحذف"); return; }
+        if(confirm("هل تريد حذف المشروع؟ لا يمكن التراجع.")){
+          setProjects((projects||[]).filter(p=>p.id!==id));
+        }
+      }
+      function removePayment(pid,payId){
+        if(auth.session?.role!=="admin"){ alert("فقط المشرف يستطيع الحذف"); return; }
+        if(confirm("هل تريد حذف السداد؟ لا يمكن التراجع.")){
+          setProjects((projects||[]).map(p=>p.id===pid? {...p, payments:(p.payments||[]).filter(x=>x.id!==payId)} : p));
+        }
+      }
+
+      return (
+        <div className="space-y-6">
+          {filtered.some(x=>x.retentionDue) && <div className="p-3 rounded-xl bg-amber-50 text-amber-900 text-sm">لديك مبالغ ضمان مستحقة للإطلاق.</div>}
+
+          <section className="flex flex-wrap items-center gap-2">
+            <input className="px-3 py-2 rounded-xl border bg-white w-72" placeholder="بحث: اسم/جهة/مشرف/PO/فاتورة/محضر" value={search} onChange={e=>setSearch(e.target.value)}/>
+            <button className={classNames("px-3 py-2 rounded-full border", filter==="ALL"?"bg-slate-900 text-white":"bg-white")} onClick={()=>setFilter("ALL")}>الكل</button>
+            <button className={classNames("px-3 py-2 rounded-full border", filter==="OVERDUE"?"bg-slate-900 text-white":"bg-white")} onClick={()=>setFilter("OVERDUE")}>متأخر</button>
+            <button className={classNames("px-3 py-2 rounded-full border", filter==="UNPAID"?"bg-slate-900 text-white":"bg-white")} onClick={()=>setFilter("UNPAID")}>غير مدفوع</button>
+            <button className={classNames("px-3 py-2 rounded-full border", filter==="PAID"?"bg-slate-900 text-white":"bg-white")} onClick={()=>setFilter("PAID")}>مدفوع</button>
+            <div className="ms-auto flex items-center gap-2">
+              <button className="btn btn-primary" onClick={()=>{ setProjEditing(null); setProjOpen(true); }}>+ مشروع جديد</button>
+            </div>
+          </section>
+
+          <section className="bg-white rounded-2xl shadow p-3 table-wrap">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-semibold">جدول المشاريع</h2>
+              <div className="text-sm text-slate-500 flex gap-4">
+                <span>إجمالي العطاء (LYD): <b className="tabular-nums">{totals.bid.toLocaleString()}</b></span>
+                <span>إجمالي المستلم (LYD): <b className="tabular-nums">{totals.rcv.toLocaleString()}</b></span>
+                <span>إجمالي الربح (LYD): <b className="tabular-nums">{totals.profit.toLocaleString()}</b></span>
+              </div>
+            </div>
+            <table className="min-w-full text-sm">
+              <thead className="bg-white">
+                <tr className="text-left border-b">
+                  {["#","اسم المشروع","الجهة","المشرف","PO","العملة","قيمة العطاء (LYD)","إجمالي المستلم (LYD)","التكلفة (LYD)","الربح (LYD)","% الهامش","رقم الفاتورة","رقم محضر","ت.الفاتورة","آخر سداد","الحالة"].map(h=>{
+                    const hide=(h==="المشرف"||h==="PO"||h==="التكلفة (LYD)"||h==="رقم الفاتورة"||h==="رقم محضر"||h==="ت.الفاتورة"||h==="آخر سداد")?"hidden lg:table-cell":"";
+                    return <th key={h} className={classNames("py-2 px-2 whitespace-nowrap",hide)}>{h}</th>;
+                  })}
+                  <th className="py-2 px-2 whitespace-nowrap sticky-right">إجراءات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(filtered||[]).map(p=>{
+                  const isExp=!!expanded[p.id];
+                  return (
+                    <React.Fragment key={p.id}>
+                      <tr className={classNames("border-b", p.overdue&&!p.paid?"bg-red-50":p.paid?"bg-emerald-50":"")}>
+                        <td className="py-2 px-2">{p.id}</td>
+                        <td className="py-2 px-2">{p.name}</td>
+                        <td className="py-2 px-2">{p.client||"—"}</td>
+                        <td className="py-2 px-2 hidden lg:table-cell">{p.supervisor||"—"}</td>
+                        <td className="py-2 px-2 hidden lg:table-cell">{p.po||"—"}</td>
+                        <td className="py-2 px-2">{p.currency}</td>
+                        <td className="py-2 px-2 tabular-nums">{p.totalLYDBid!=null? Number(p.totalLYDBid).toLocaleString():"—"}</td>
+                        <td className="py-2 px-2 tabular-nums">{p.totalLYDReceived!=null? Number(p.totalLYDReceived).toLocaleString():"—"}</td>
+                        <td className="py-2 px-2 tabular-nums hidden lg:table-cell">{(p.projectCostLYD!=null)? Number(p.projectCostLYD).toLocaleString():"—"}</td>
+                        <td className="py-2 px-2 tabular-nums">{(p.profitLYD!=null)? Number(p.profitLYD).toLocaleString():"—"}</td>
+                        <td className="py-2 px-2">{p.marginPct!=null? p.marginPct+"%":"—"}</td>
+                        <td className="py-2 px-2 hidden lg:table-cell">{p.invoiceNumber||"—"}</td>
+                        <td className="py-2 px-2 hidden lg:table-cell">{p.deliveryNoteNumber||"—"}</td>
+                        <td className="py-2 px-2 hidden lg:table-cell">{p.invoiceDate||"—"}</td>
+                        <td className="py-2 px-2 hidden lg:table-cell">{p.lastPayDate||"—"}</td>
+                        <td className="py-2 px-2">{p.paid? "مدفوع" : p.overdue? "متأخر" : "غير مدفوع"}</td>
+                        <td className="py-2 px-2 sticky-right">
+                          <div className="actions flex gap-1">
+                            <button className="icon" title="تعديل" onClick={()=>{ setProjEditing(p); setProjOpen(true); }}>✏️</button>
+                            <button className="icon" title="إضافة سداد" onClick={()=>{ setPayProject(p); setPayEditing(null); setPayOpen(true); }}>💳</button>
+                            <button className="icon" title={isExp?"إخفاء التفاصيل":"تفاصيل"} onClick={()=>setExpanded({...expanded,[p.id]:!isExp})}>{isExp?"▴":"▾"}</button>
+                            <button className="icon" title="حذف" onClick={()=>removeProject(p.id)}>🗑️</button>
+                          </div>
+                        </td>
+                      </tr>
+                      {isExp && (
+                        <tr className="bg-slate-50">
+                          <td colSpan="17" className="p-3">
+                            <div className="flex items-center justify-between mb-2 gap-2">
+                              <div className="font-semibold">مدفوعات المشروع</div>
+                              <div className="flex gap-2">
+                                {p.retention?.releaseDate && !p.retention?.paid && (
+                                  <button className="btn btn-warn" onClick={()=>{ setPayProject({...p,_retentionRelease:true}); setPayEditing(null); setPayOpen(true); }}>
+                                    إطلاق الضمان ({p.retention.amount||0} {p.currency})
+                                  </button>
+                                )}
+                                <button className="btn btn-primary" onClick={()=>{ setPayProject(p); setPayEditing(null); setPayOpen(true); }}>+ إضافة سداد</button>
+                              </div>
+                            </div>
+                            <div className="overflow-auto">
+                              <table className="min-w-full text-sm">
+                                <thead><tr className="text-left border-b">{["التاريخ","المبلغ ("+p.currency+")","تاريخ التسوية","FX يدوي","القيمة بالدينار","النوع","إجراءات"].map(h=><th key={h} className="py-2 px-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+                                <tbody>
+                                  {(p.payments||[]).map(pay=>{
+                                    const rr = (p.currency==="LYD") ? 1 : (pay.fxManual && pay.fxManual>0 ? pay.fxManual : null);
+                                    const lyd = p.currency==="LYD"? num(pay.amount) : rr? +(num(pay.amount)*rr).toFixed(2) : null;
+                                    return (
+                                      <tr key={pay.id} className="border-b last:border-0">
+                                        <td className="py-2 px-2">{pay.date||"—"}</td>
+                                        <td className="py-2 px-2 tabular-nums">{num(pay.amount).toLocaleString()}</td>
+                                        <td className="py-2 px-2">{pay.settlementDate||"—"}</td>
+                                        <td className="py-2 px-2">{pay.fxManual ?? "—"}</td>
+                                        <td className="py-2 px-2 tabular-nums">{lyd!=null? Number(lyd).toLocaleString():"—"}</td>
+                                        <td className="py-2 px-2">{pay.type==="retention"?"ضمان":"عادي"}</td>
+                                        <td className="py-2 px-2">
+                                          <div className="actions flex gap-1">
+                                            <button className="icon" title="تعديل" onClick={()=>{ setPayProject(p); setPayEditing(pay); setPayOpen(true); }}>✏️</button>
+                                            <button className="icon" title="حذف" onClick={()=>removePayment(p.id,pay.id)}>🗑️</button>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                  {(!p.payments||p.payments.length===0) && <tr><td className="py-2 px-2 text-slate-500" colSpan="7">لا توجد مدفوعات بعد.</td></tr>}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </section>
+
+          <ProjectModal open={projOpen} onClose={()=>setProjOpen(false)} initial={projEditing} onSave={(patch)=>{
+            if(projEditing){ const id=projEditing.id; 
+              setProjects((projects||[]).map(p=>p.id===id? {...p,...patch}:p));
+            }else{
+              const id=((projects||[]).at(-1)?.id||0)+1;
+              setProjects([...(projects||[]), {id, payments:[], retention:patch.retention ?? null, ...patch}]);
+            }
+          }}/>
+          <PaymentModal open={payOpen} onClose={()=>setPayOpen(false)} project={payProject} editing={payEditing} onSave={(pay)=>{
+            if(!payProject) return;
+            if(payProject._retentionRelease && !payEditing){
+              setProjects((projects||[]).map(p=>p.id===payProject.id? {
+                ...p,
+                payments:[...(p.payments||[]), {...pay,id:`p${Date.now()}`,type:"retention"}],
+                retention:{...(p.retention||{}), paid:true}
+              } : p));
+            }else if(payEditing){
+              setProjects((projects||[]).map(p=>p.id===payProject.id? {
+                ...p, payments:p.payments.map(x=>x.id===payEditing.id? {...payEditing,...pay}:x)
+              } : p));
+            }else{
+              setProjects((projects||[]).map(p=>p.id===payProject.id? {...p, payments:[...(p.payments||[]), {...pay,id:`p${Date.now()}`}] } : p));
+            }
+            setPayOpen(false);
+          }}/>
+        </div>
+      );
+    }
+
+    // ===== الإعدادات & الواجهة الرئيسية =====
+    function useSettings(){ return useServerState("nwgd_settings",{logoUrl:"",logoSize:56}); }
+
+    function MainApp({auth}){
+      const [settings,setSettings]=useSettings();
+      const [projects,setProjects]=useServerState("nwgd_projects",[]);
+
+      const totals=useMemo(()=>{ 
+        let B=0,S=0,P=0, unpaid=0, delayed=0, retCount=0, retSum=0;
+        (projects||[]).forEach(p=>{
+          const last=[...(p.payments||[])].sort((a,b)=>(a.date||"")<(b.date||"")?1:-1)[0];
+
+          const b = (p.bidValueLYD!=null) ? num(p.bidValueLYD) :
+                    (p.currency==="LYD" ? num(p.bidOriginal||0) : 0);
+          let s=0; (p.payments||[]).forEach(pay=>{
+            if(p.currency==="LYD") s+=num(pay.amount);
+            else{
+              const r = (pay.fxManual && pay.fxManual>0) ? pay.fxManual : null;
+              if(r) s += num(pay.amount)*r;
+            }
+          });
+          const cost=num(p.projectCostLYD||0);
+          B+=b; S+=s; P+=(s - cost);
+
+          const hasPayment=!!last;
+          if(!hasPayment) unpaid++;
+          const inv=p.invoiceDate||"";
+          if(!hasPayment && inv && Math.round((new Date()-new Date(inv))/86400000) > 90) delayed++;
+
+          if(p.retention && !p.retention.paid){
+            retCount++;
+            if(p.currency==="LYD") retSum += num(p.retention.amount||0);
+          }
+        });
+        return {B:+B.toFixed(2), S:+S.toFixed(2), P:+P.toFixed(2), unpaidCount:unpaid, delayedCount:delayed, retentionCount:retCount, retentionSum:+retSum.toFixed(2)};
+      },[projects]);
+
+      const logoSrc=settings.logoUrl||""; const logoSize=settings.logoSize||56;
+
+      return (
+        <div className="max-w-7xl mx-auto p-4 space-y-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {logoSrc ? <img src={logoSrc} className="object-contain" style={{height:logoSize+"px"}}/> : <div className="h-12 w-12 bg-slate-200 rounded"></div>}
+              <div className="text-xl font-bold">نظام متابعة المشاريع</div>
+              <span className="text-xs px-2 py-1 rounded bg-slate-200">وضع: خادم مشترك</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button className="btn" onClick={()=>alert("تغيير الشعار من الإعدادات المتقدمة (مؤقتًا مخفي).")}>الإعدادات</button>
+              <span className="text-sm text-slate-600">مرحبًا، {auth.session.username}</span>
+              <button className="btn btn-danger" onClick={auth.logout}>خروج</button>
+            </div>
+          </div>
+
+          {totals.retentionCount>0 && (
+            <div className="p-3 rounded-xl bg-amber-100 text-amber-900 text-sm border border-amber-300">
+              يوجد <b>{totals.retentionCount}</b> مشروع به <b>مبلغ ضمان</b> غير مُطلق. (يُجمع الدينار فقط): <b className="tabular-nums">{totals.retentionSum.toLocaleString()}</b>
+            </div>
+          )}
+
+          <div className="grid md:grid-cols-5 gap-3">
+            <Card title="إجمالي العطاء (LYD)" value={totals.B}/>
+            <Card title="إجمالي المستلم (LYD)" value={totals.S}/>
+            <Card title="إجمالي الربح (LYD)" value={totals.P}/>
+            <Card title="المشاريع غير المدفوعة" value={totals.unpaidCount}/>
+            <Card title="المشاريع المتأخرة (>90يوم)" value={totals.delayedCount}/>
+          </div>
+
+          <ProjectsUI projects={projects} setProjects={setProjects} auth={auth} />
+        </div>
+      );
+    }
+
+    // ===== الدخول وواجهة القشرة =====
+    function Login({onLogin}){
+      const [u,setU]=useState("admin"), [p,setP]=useState("admin123"), [msg,setMsg]=useState("");
+      async function submit(e){ e.preventDefault(); const r=await onLogin(u,p); if(!r.ok) setMsg(r.msg); }
+      return (
+        <div className="min-h-screen flex items-center justify-center p-6">
+          <div className="w-[420px] max-w-[95vw] space-y-6">
+            <div className="text-center space-y-2">
+              <div className="mx-auto h-16 w-16 rounded-full bg-slate-200 flex items-center justify-center font-bold">NW</div>
+              <div className="text-2xl font-bold">تسجيل الدخول</div>
+            </div>
+            <form onSubmit={submit} className="bg-white rounded-2xl shadow p-4 space-y-3">
+              <Field label="اسم المستخدم"><input className="w-full border rounded-xl px-3 py-2" value={u} onChange={(e)=>setU(e.target.value)} required/></Field>
+              <Field label="كلمة المرور"><input type="password" className="w-full border rounded-xl px-3 py-2" value={p} onChange={(e)=>setP(e.target.value)} required/></Field>
+              {msg && <div className="text-rose-600 text-sm">{msg}</div>}
+              <button type="submit" className="w-full btn btn-primary">دخول</button>
+            </form>
+            <div className="text-center text-xs text-slate-500">الخادم مشترك — البيانات محفوظة مركزيًا</div>
+          </div>
+        </div>
+      );
+    }
+
+    function Shell(){
+      const auth=useAuth();
+      if(!auth.booted) return <div className="p-6">...</div>;
+      if(!auth.session) return <Login onLogin={auth.login}/>;
+      return <MainApp auth={auth}/>;
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<Shell/>);
+  </script>
+</body>
+</html>

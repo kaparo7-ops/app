@@ -1,0 +1,1069 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>إدارة المناقصات – NWGD (Full Pack)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* أسلوبيات إضافية خفيفة */
+    .tabular-nums{font-variant-numeric:tabular-nums}
+    thead th{position:sticky;top:0;background:#fff;z-index:10}
+    .row-hover:hover{background:#f8fafc}
+    .mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:100}
+    .panel{width:980px;max-width:96vw;max-height:90vh;overflow:auto;background:#fff;border-radius:1rem;box-shadow:0 12px 40px rgba(0,0,0,.25)}
+    .btn{padding:.45rem .7rem;border-radius:.65rem;border:1px solid #e2e8f0;background:#fff}
+    .btn-primary{background:#0f172a;color:#fff;border-color:#0f172a}
+    .btn-danger{background:#e11d48;color:#fff;border-color:#e11d48}
+    .btn-muted{background:#f1f5f9}
+    .toast{position:fixed;bottom:16px;left:16px;background:#0f172a;color:#fff;padding:.6rem .9rem;border-radius:.75rem;box-shadow:0 10px 30px rgba(0,0,0,.25);z-index:200}
+    .badge{display:inline-block;padding:.2rem .5rem;border-radius:.5rem;border:1px solid #e2e8f0;background:#fff}
+    .soft{opacity:.7}
+    /* ألوان الصف حسب الحالة */
+    tr.status-participating{background:#ecfdf5}
+    tr.status-won{background:#dcfce7}
+    tr.status-lost{background:#fee2e2}
+    tr.status-onhold{background:#fef9c3}
+    tr.status-canceled{background:#f1f5f9}
+    tr.status-draft{background:#fff}
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900">
+
+<!-- ========================= مفاتيح التشغيل (Feature Flags) ========================= -->
+<script>
+  const FEATURES = {
+    autoAging60d: false,            // تغيير تلقائي بعد 60 يوم (معطّل افتراضيًا)
+    inlineEdit: false,               // تحرير سريع داخل الجدول
+    bulkActions: true,              // تحديث جماعي
+    tags: true,                     // وسوم
+    attachments: true,              // مرفقات متعددة
+    activityLog: true,              // سجل نشاط بسيط
+    reports: true,                  // التبويب: تقارير + Pipeline + تجميعات
+    calendar: true,                 // تقويم (شهر/أسبوع)
+    importValidator: true,          // متحقق CSV مع تقرير أخطاء
+    templates: true,                // تنزيل قوالب CSV/JSON
+    healthcheck: true,              // شريط حالة API
+    permissions: true,              // صلاحيات (admin/member)
+    recycleBin: true                // سلة مهملات (soft delete)
+  };
+
+  // إعدادات عامة
+  const FORCED_SERVER = { base: "/api", token: "ChangeMe-LongRandomToken!" };
+  const TRASH_RETENTION_DAYS = 30; // سلة المهملات: 30 يوم
+</script>
+
+<div class="max-w-7xl mx-auto p-4 space-y-6" id="app">
+  <!-- الشريط العلوي -->
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <div class="flex items-center gap-3">
+      <a href="/" class="px-3 py-2 rounded border bg-white hover:bg-slate-50">← المشاريع</a>
+      <h1 class="text-xl font-bold">إدارة المناقصات</h1>
+      <span id="apiHealth" class="text-xs badge soft">API…</span>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <button id="notifBtn" class="btn">تفعيل التنبيهات</button>
+      <span id="notifBadge" class="text-xs px-2 py-1 rounded bg-slate-200 hidden"></span>
+      <button id="backupBtn" class="btn hidden">نسخة احتياطية</button>
+    </div>
+  </div>
+
+  <!-- وسوم دليل الألوان -->
+  <div class="flex flex-wrap items-center gap-2 text-xs">
+    <span class="badge">دليل الألوان:</span>
+    <span class="badge bg-emerald-50">مشاركة/مقدَّم</span>
+    <span class="badge bg-emerald-100">فائزة</span>
+    <span class="badge bg-rose-100">خاسرة</span>
+    <span class="badge bg-yellow-100">معلّقة</span>
+    <span class="badge bg-slate-100">ملغاة</span>
+  </div>
+
+  <!-- تبويبات -->
+  <div class="flex items-center gap-2 text-sm">
+    <button class="btn btn-primary" data-tab="tenders">المناقصات</button>
+    <button class="btn" data-tab="reports">التقارير</button>
+    <button class="btn" data-tab="calendar">التقويم</button>
+    <button class="btn" data-tab="recycle" id="recycleTab" style="display:none">المحذوفات</button>
+  </div>
+
+  <!-- فلاتر متقدّمة -->
+  <section id="filters" class="bg-white rounded-2xl shadow p-3 space-y-2">
+    <div class="flex flex-wrap items-center gap-2">
+      <input id="q" class="px-3 py-2 rounded-xl border bg-white w-72" placeholder="بحث: المرجع/الاسم/الجهة/النوع/الشخص"/>
+      <label class="text-sm text-slate-600 flex items-center gap-2">لكل صفحة:
+        <select id="ps" class="border rounded px-2 py-1">
+          <option>25</option><option>50</option><option>100</option>
+        </select>
+      </label>
+      <label class="text-sm text-slate-600 flex items-center gap-2">الجهة:
+        <select id="fltOwner" class="border rounded px-2 py-1 min-w-[10rem]"><option value="">الكل</option></select>
+      </label>
+      <label class="text-sm text-slate-600 flex items-center gap-2">الحالة:
+        <select id="fltStatus" class="border rounded px-2 py-1"><option value="">الكل</option></select>
+      </label>
+      <label class="text-sm text-slate-600 flex items-center gap-2">من:
+        <input id="fltFrom" type="date" class="border rounded px-2 py-1"/>
+      </label>
+      <label class="text-sm text-slate-600 flex items-center gap-2">إلى:
+        <input id="fltTo" type="date" class="border rounded px-2 py-1"/>
+      </label>
+      <button id="mine" class="btn">مناقصاتي</button>
+      <button id="clearFilters" class="btn">مسح الفلاتر</button>
+      <button id="add" class="btn btn-primary ms-auto">+ إضافة مناقصة</button>
+    </div>
+
+    <!-- شريط أخطاء استيراد CSV -->
+    <div id="importErrors" class="hidden bg-rose-50 text-rose-800 text-sm p-2 rounded"></div>
+  </section>
+
+  <!-- بطاقات سريعة أعلى الجدول -->
+  <section id="cards" class="grid md:grid-cols-7 gap-3"></section>
+
+  <!-- تحديث جماعي -->
+  <section id="bulkBar" class="hidden bg-white rounded-2xl shadow p-3 flex flex-wrap items-end gap-2 text-sm">
+    <div>تحديد <span id="selCount" class="font-bold">0</span> عنصر</div>
+    <select id="bulkStatus" class="border rounded px-2 py-1">
+      <option value="">— حالة —</option>
+    </select>
+    <input id="bulkPerson" class="border rounded px-2 py-1" placeholder="الشخص"/>
+    <input id="bulkVisit" type="date" class="border rounded px-2 py-1"/>
+    <button id="applyBulk" class="btn btn-primary">تطبيق</button>
+    <button id="cancelBulk" class="btn">إلغاء</button>
+  </section>
+
+  <!-- الجدول الرئيسي -->
+  <section id="listTab" class="bg-white rounded-2xl shadow p-3 overflow-auto">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="font-semibold">جدول المناقصات</h2>
+      <div id="totals" class="text-sm text-slate-500"></div>
+    </div>
+
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left border-b">
+          <th class="py-2 px-2"><input type="checkbox" id="selAll"></th>
+          <th class="py-2 px-2 cursor-pointer" data-sort="reference">المرجع</th>
+          <th class="py-2 px-2 cursor-pointer" data-sort="name">اسم المناقصة</th>
+          <th class="py-2 px-2 cursor-pointer" data-sort="type">النوع</th>
+          <th class="py-2 px-2 cursor-pointer" data-sort="owner">الجهة</th>
+          <th class="py-2 px-2 cursor-pointer" data-sort="person">الشخص</th>
+          <th class="py-2 px-2 cursor-pointer" data-sort="deadline">انتهاء التقديم</th>
+          <th class="py-2 px-2 cursor-pointer" data-sort="submittedAt">تاريخ المشاركة</th>
+          <th class="py-2 px-2 cursor-pointer" data-sort="visitDate">الزيارة</th>
+          <th class="py-2 px-2 cursor-pointer" data-sort="status">الحالة</th>
+          <th class="py-2 px-2 cursor-pointer" data-sort="bidAmount">المبلغ</th>
+          <th class="py-2 px-2">مرفقات</th>
+          <th class="py-2 px-2">إجراءات</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+
+    <!-- تحكم الصفحات -->
+    <div class="flex items-center justify-between mt-3 text-sm">
+      <div id="pageInfo"></div>
+      <div class="flex items-center gap-2">
+        <button class="btn" id="first">الأولى</button>
+        <button class="btn" id="prev">السابق</button>
+        <button class="btn" id="next">التالي</button>
+        <button class="btn" id="last">الأخيرة</button>
+      </div>
+    </div>
+
+    <!-- تصدير/استيراد/طباعة -->
+    <div class="flex flex-wrap items-center gap-2 mt-3">
+      <button class="btn" id="expCsv">تصدير CSV</button>
+      <button class="btn" id="expJson">تصدير JSON</button>
+      <label class="btn">استيراد CSV<input id="impCsv" type="file" accept=".csv" class="hidden"/></label>
+      <label class="btn">استيراد JSON<input id="impJson" type="file" accept=".json,application/json" class="hidden"/></label>
+      <button class="btn" id="print">طباعة / PDF</button>
+      <button class="btn" id="dlCsvTpl" style="display:none">تنزيل قالب CSV</button>
+      <button class="btn" id="dlJsonTpl" style="display:none">تنزيل قالب JSON</button>
+    </div>
+  </section>
+
+  <!-- تبويب التقارير -->
+  <section id="reportsTab" class="hidden bg-white rounded-2xl shadow p-3 space-y-4">
+    <h2 class="font-semibold">التقارير</h2>
+    <div id="reportCards" class="grid md:grid-cols-4 gap-3"></div>
+    <div class="grid md:grid-cols-2 gap-3">
+      <div class="p-3 rounded-2xl border">
+        <div class="font-semibold mb-2">Pipeline (عدد/مبالغ)</div>
+        <div id="pipeline"></div>
+      </div>
+      <div class="p-3 rounded-2xl border">
+        <div class="font-semibold mb-2">شهري (عدد المقدّم/المبالغ)</div>
+        <div id="monthly"></div>
+      </div>
+      <div class="p-3 rounded-2xl border">
+        <div class="font-semibold mb-2">حسب الجهة</div>
+        <div id="byOwner"></div>
+      </div>
+      <div class="p-3 rounded-2xl border">
+        <div class="font-semibold mb-2">حسب النوع / الشخص</div>
+        <div id="byTypePerson"></div>
+      </div>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <button class="btn" id="dlMonthCsv">تنزيل تقرير الشهر CSV</button>
+    </div>
+  </section>
+
+  <!-- تبويب التقويم -->
+  <section id="calendarTab" class="hidden bg-white rounded-2xl shadow p-3 space-y-3">
+    <div class="flex items-center gap-2">
+      <h2 class="font-semibold">التقويم</h2>
+      <select id="calView" class="border rounded px-2 py-1">
+        <option value="month">شهر</option>
+        <option value="week">أسبوع</option>
+      </select>
+      <input id="calRef" type="month" class="border rounded px-2 py-1"/>
+      <button class="btn" id="calToday">اليوم</button>
+    </div>
+    <div id="calendar"></div>
+  </section>
+
+  <!-- تبويب سلة المهملات -->
+  <section id="recycleTabPanel" class="hidden bg-white rounded-2xl shadow p-3 space-y-3">
+    <div class="flex items-center justify-between">
+      <h2 class="font-semibold">المحذوفات (خلال آخر 30 يوم)</h2>
+      <button class="btn btn-danger" id="emptyTrash">إفراغ السلة</button>
+    </div>
+    <div id="recycleList"></div>
+  </section>
+
+  <!-- نافذة التفاصيل/التعديل -->
+  <div id="modalHost"></div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden">تم الحفظ ✓</div>
+</div>
+
+<script>
+// ====================== أدوات API (KV) ======================
+async function kvGet(key){
+  const r = await fetch(`${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`);
+  if(!r.ok) throw new Error("kv get failed: "+r.status);
+  const j = await r.json(); return j.value;
+}
+async function kvPut(key, value){
+  const r = await fetch(`${FORCED_SERVER.base}/kv/${encodeURIComponent(key)}?token=${FORCED_SERVER.token}`,{
+    method:"PUT",
+    headers:{"Content-Type":"application/json","x-sync-token":FORCED_SERVER.token},
+    body: JSON.stringify({value})
+  });
+  if(!r.ok) throw new Error("kv put failed: "+r.status);
+}
+
+// ====================== الأدوات العامة ======================
+const STATUS_LIST = [
+  {v:"draft", label:"قيد التجهيز"},
+  {v:"participating", label:"المشاركة/مقدَّم"},
+  {v:"won", label:"فائزة"},
+  {v:"lost", label:"خاسرة"},
+  {v:"onhold", label:"معلّقة"},
+  {v:"canceled", label:"ملغاة"}
+];
+
+function statusLabel(v){ return (STATUS_LIST.find(s=>s.v===v)||{}).label || v || "—"; }
+function rowClass(s){ return `status-${s||"draft"}`; }
+function esc(s){ return String(s??"").replace(/[&<>"]/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m])); }
+function parseNum(x){ const n=Number(x); return isFinite(n)? n: 0; }
+function fmtMoney(n,curr){ if(n==null||n==="") return "—"; return `${curr||"LYD"} ${Number(n).toLocaleString()}`; }
+function todayStr(){return new Date().toISOString().slice(0,10)}
+function daysDiff(a,b){return Math.round((a-b)/86400000)}
+
+// ====================== الحالة العامة ======================
+const state = {
+  tenders: [],           // البيانات (باستثناء المحذوفة)
+  trash: [],             // المحذوفة (deletedAt خلال 30 يوم)
+  page: 1,
+  pageSize: 25,
+  search: "",
+  filter: {owner:"", status:"", from:"", to:""},
+  sort: {key:"", dir:0}, // 0=لا شيء، 1=تصاعدي، -1=تنازلي
+  selection: new Set(),
+  currentUser: {username:"", role:"guest"},
+  notifGranted: (typeof Notification!=='undefined' && Notification.permission==="granted"),
+  activeTab: "tenders",  // tenders | reports | calendar | recycle
+};
+
+function saveUiPrefs(){ localStorage.setItem("tenders_ui", JSON.stringify({pageSize: state.pageSize, search: state.search, filter: state.filter})); }
+function loadUiPrefs(){ try{ const j=JSON.parse(localStorage.getItem("tenders_ui")||"{}"); if(j.pageSize) state.pageSize=j.pageSize; if(j.search) state.search=j.search; if(j.filter) state.filter=j.filter; }catch{} }
+
+// ====================== تحميل الجلسة والمستخدم ======================
+async function loadSessionAndUser(){
+  try{
+    const session = await kvGet("nwgd_session").catch(()=>null);
+    const users = await kvGet("nwgd_users").catch(()=>null);
+    let username = session && session.username || session && session.user || "";
+    let role = "guest";
+    if(users && Array.isArray(users)){
+      const u = users.find(x=>x.username===username);
+      if(u) role = (u.role || "member");
+    }
+    state.currentUser = {username, role};
+  }catch{
+    state.currentUser = {username:"", role:"guest"};
+  }
+}
+
+// ====================== التحميل/الحفظ ======================
+async function loadAll(){
+  loadUiPrefs();
+  await loadSessionAndUser();
+  const raw = await kvGet("nwgd_tenders_v2").catch(()=>[]);
+  const now = new Date();
+
+  const all = Array.isArray(raw)? raw : [];
+  // سلة المهملات (soft delete)
+  const keepInTrash = [];
+  const active = [];
+  all.forEach(t=>{
+    if(t.deletedAt){
+      const d=new Date(t.deletedAt);
+      if(isFinite(d) && daysDiff(now,d) <= TRASH_RETENTION_DAYS){ keepInTrash.push(t); }
+      // لو أقدم من مدة الاحتفاظ، نتجاهله في العرض (يبقى موجود بالـKV حتى يقوم المستخدم بتنظيف السلة)
+    }else{
+      active.push(t);
+    }
+  });
+
+  state.tenders = active;
+  state.trash = keepInTrash;
+
+  // auto aging (اختياري)
+  if(FEATURES.autoAging60d){
+    let changed=false;
+    state.tenders.forEach(t=>{
+      if(!t.status || ["won","lost","canceled"].includes(t.status)) return;
+      const baseStr = t.submittedAt || t.deadline; if(!baseStr) return;
+      const base = new Date(baseStr); if(!isFinite(base)) return;
+      if(daysDiff(now, base) > 60){ t.status = "lost"; (t.log||(t.log=[])).push({date: new Date().toISOString(), user: state.currentUser.username||"system", action:"auto-aging-60d", notes:"تحويل تلقائي إلى خاسرة بعد 60 يوم"}); changed=true; }
+    });
+    if(changed) await persist();
+  }
+
+  renderAll();
+}
+
+async function persist(){
+  // دمج القائمة النشطة + سلة المهملات التي ما زالت ضمن المدة
+  const merged = state.tenders.concat(state.trash);
+  await kvPut("nwgd_tenders_v2", merged);
+  showToast();
+}
+
+// ====================== بطاقات ومقاييس ======================
+function computeMetrics(rows){
+  const m = {
+    total: rows.length,
+    draft: rows.filter(x=>x.status==="draft").length,
+    participating: rows.filter(x=>x.status==="participating").length,
+    won: rows.filter(x=>x.status==="won").length,
+    lost: rows.filter(x=>x.status==="lost").length,
+    onhold: rows.filter(x=>x.status==="onhold").length,
+    canceled: rows.filter(x=>x.status==="canceled").length,
+    amountTotal: rows.reduce((s,x)=> s + (parseNum(x.bidAmount)||0), 0),
+    nearDeadline: rows.filter(x=>{ if(!x.deadline) return false; const d=new Date(x.deadline), now=new Date(); const days=daysDiff(d,now); return days>=0 && days<=30; }).length,
+    upcomingVisits: rows.filter(x=>{ if(!x.visitDate) return false; const d=new Date(x.visitDate), now=new Date(); const days=daysDiff(d,now); return days>=0 && days<=14; }).length,
+  };
+  return m;
+}
+
+function card(title, value){ return `
+  <div class="bg-white rounded-2xl shadow p-3">
+    <div class="text-sm text-slate-500">${title}</div>
+    <div class="text-2xl font-bold mt-1 tabular-nums text-left">${value}</div>
+  </div>`; }
+
+// ====================== واجهة الجدول ======================
+function applyFilters(rows){
+  let r = rows.slice();
+  const s = (state.search||"").trim().toLowerCase();
+  const {owner,status,from,to} = state.filter;
+  if(s){ r = r.filter(t=> [t.reference,t.name,t.owner,t.type,t.person,(t.tags||[]).join(" ")].some(f=> String(f||"").toLowerCase().includes(s))); }
+  if(owner){ r = r.filter(t=> (t.owner||"")===owner); }
+  if(status){ r = r.filter(t=> (t.status||"")===status); }
+  if(from){ r = r.filter(t=> t.deadline && (new Date(t.deadline)>= new Date(from))); }
+  if(to){ r = r.filter(t=> t.deadline && (new Date(t.deadline)<= new Date(to))); }
+  return r;
+}
+
+function applySort(rows){
+  const {key,dir} = state.sort; if(!key || !dir) return rows;
+  return rows.slice().sort((a,b)=>{
+    let av=a[key], bv=b[key];
+    if(key==="bidAmount"){ av=parseNum(av); bv=parseNum(bv); }
+    return (av>bv?1:av<bv?-1:0) * dir;
+  });
+}
+
+function paginate(rows){
+  const total=rows.length; const pages=Math.max(1, Math.ceil(total/state.pageSize));
+  state.page=Math.min(Math.max(1,state.page),pages);
+  const slice = rows.slice((state.page-1)*state.pageSize, state.page*state.pageSize);
+  return {slice,total,pages,page:state.page};
+}
+
+function renderTable(){
+  const q = document.getElementById("q");
+  const ps = document.getElementById("ps");
+  const tbody = document.getElementById("tbody");
+  const totals = document.getElementById("totals");
+  const pageInfo = document.getElementById("pageInfo");
+  const cards = document.getElementById("cards");
+  const notifBadge = document.getElementById("notifBadge");
+
+  q.value = state.search || "";
+  ps.value = String(state.pageSize);
+
+  // خيارات فلاتر القوائم
+  const fltOwner = document.getElementById("fltOwner");
+  const fltStatus = document.getElementById("fltStatus");
+  const uniqOwners = Array.from(new Set(state.tenders.map(t=>t.owner).filter(Boolean))).sort();
+  fltOwner.innerHTML = `<option value="">الكل</option>` + uniqOwners.map(o=>`<option ${state.filter.owner===o?"selected":""}>${esc(o)}</option>`).join("");
+  fltStatus.innerHTML = `<option value="">الكل</option>` + STATUS_LIST.map(s=>`<option value="${s.v}" ${state.filter.status===s.v?"selected":""}>${s.label}</option>`).join("");
+
+  // تصفية + فرز + ترقيم
+  let rows = applyFilters(state.tenders);
+  const metAll = computeMetrics(state.tenders);
+  const metFiltered = computeMetrics(rows);
+  rows = applySort(rows);
+  const {slice,total,pages,page} = paginate(rows);
+
+  // بطاقات
+  cards.innerHTML = [
+    card("إجمالي المناقصات", metAll.total),
+    card("قيد التجهيز", metAll.draft),
+    card("المشاركة/مقدَّم", metAll.participating),
+    card("فائزة", metAll.won),
+    card("خاسرة", metAll.lost),
+    card("معلّقة", metAll.onhold),
+    card("ملغاة", metAll.canceled)
+  ].join("");
+
+  // شارة التنبيهات
+  if(metAll.nearDeadline>0 || metAll.upcomingVisits>0){
+    notifBadge.textContent = `قرب انتهاء: ${metAll.nearDeadline} | زيارات: ${metAll.upcomingVisits}`;
+    notifBadge.classList.remove("hidden");
+  }else notifBadge.classList.add("hidden");
+
+  totals.textContent = `إجمالي بعد التصفية: ${total} | مجموع المبالغ: ${metFiltered.amountTotal.toLocaleString()} `;
+  pageInfo.textContent = `الصفحة ${page} من ${pages} — إجمالي العناصر: ${total}`;
+
+  // بناء الصفوف
+  const canDelete = !FEATURES.permissions || state.currentUser.role==="admin";
+  const canBackup = !FEATURES.permissions || state.currentUser.role==="admin";
+  document.getElementById("backupBtn").classList.toggle("hidden", !canBackup);
+
+  const headers = document.querySelectorAll('th[data-sort]');
+  headers.forEach(th=>{
+    const k=th.getAttribute('data-sort');
+    let marker=''; if(state.sort.key===k && state.sort.dir!==0) marker = state.sort.dir>0? ' ↑':' ↓';
+    th.innerHTML = esc(th.textContent.replace(/[↑↓]/g,'')) + marker;
+  });
+
+  tbody.innerHTML = slice.map(t=>{
+    const reasonMark = (t.status==="lost"||t.status==="canceled")? (t.reason? '✅':'⚠️') : '';
+    const tagsHtml = FEATURES.tags && Array.isArray(t.tags) && t.tags.length? `<div class="mt-1 text-xs text-slate-600">وسوم: ${t.tags.map(x=>`<span class='badge soft mr-1'>${esc(x)}</span>`).join('')}</div>`:'';
+    const amountLine = t.bidAmount? `<div class="text-xs text-emerald-700">(${esc(t.bidCurrency||'LYD')} ${Number(t.bidAmount).toLocaleString()})</div>`:'';
+    const atts = FEATURES.attachments && Array.isArray(t.attachments)? t.attachments.map(a=>`<a class='underline text-sky-700 mr-1' href='${esc(a.url)}' target='_blank'>${esc(a.label||'مرفق')}</a>`).join('') : (t.techUrl||t.finUrl? [t.techUrl?`<a class='underline text-sky-700' href='${esc(t.techUrl)}' target='_blank'>فني</a>`:'', t.finUrl?` <a class='underline text-sky-700' href='${esc(t.finUrl)}' target='_blank'>مالي</a>`:''].join('') : '—');
+
+    // محررات سريعة
+    const quickPerson = FEATURES.inlineEdit? `<input class='border rounded px-2 py-1 w-32' data-qperson='${t.id}' value='${esc(t.person||"")}'/>` : esc(t.person||'—');
+    const quickVisit = FEATURES.inlineEdit? `<input type='date' class='border rounded px-2 py-1' data-qvisit='${t.id}' value='${esc(t.visitDate||"")}'/>` : esc(t.visitDate||'—');
+    const quickStatus = FEATURES.inlineEdit? `<select class='border rounded px-2 py-1' data-qstatus='${t.id}'>${STATUS_LIST.map(s=>`<option value='${s.v}' ${s.v===(t.status||'draft')?'selected':''}>${esc(s.label)}</option>`).join('')}</select> ${reasonMark}` : `${esc(statusLabel(t.status))} ${reasonMark}`;
+
+    const quickSave = FEATURES.inlineEdit? `<button class='btn btn-primary text-xs' data-qsave='${t.id}'>حفظ</button>`:'';
+
+    return `
+    <tr class="border-b last:border-0 row-hover ${rowClass(t.status)}">
+      <td class="py-2 px-2"><input type='checkbox' data-sel='${t.id}' ${state.selection.has(t.id)?'checked':''}></td>
+      <td class="py-2 px-2">${esc(t.reference||'—')}</td>
+      <td class="py-2 px-2">
+        <div class='font-medium'>${esc(t.name||'—')}</div>
+        <div class='text-xs text-slate-600'>${esc(t.owner||'—')} • ${esc(t.submittedAt||'—')} ${amountLine}</div>
+        ${tagsHtml}
+      </td>
+      <td class="py-2 px-2">${esc(t.type||'—')}</td>
+      <td class="py-2 px-2">${esc(t.owner||'—')}</td>
+      <td class="py-2 px-2">${quickPerson}</td>
+      <td class="py-2 px-2">${esc(t.deadline||'—')}</td>
+      <td class="py-2 px-2">${esc(t.submittedAt||'—')}</td>
+      <td class="py-2 px-2">${quickVisit}</td>
+      <td class="py-2 px-2">${quickStatus}</td>
+      <td class="py-2 px-2">${fmtMoney(t.bidAmount,t.bidCurrency)}</td>
+      <td class="py-2 px-2">${atts||'—'}</td>
+      <td class="py-2 px-2">
+        <div class="flex gap-2">
+          <button class="btn" data-det="${t.id}">تفاصيل</button>
+          ${canDelete? `<button class="btn btn-danger" data-del="${t.id}">حذف</button>`: ''}
+          ${quickSave}
+        </div>
+      </td>
+    </tr>`;
+  }).join("") || `<tr><td class='py-6 px-2 text-slate-500 text-center' colspan='13'>لا توجد مناقصات</td></tr>`;
+
+  // إبراز قريب انتهاء خلال 7 أيام
+  slice.forEach(t=>{
+    if(!t.deadline) return; const d=new Date(t.deadline), now=new Date(); const days=daysDiff(d,now);
+    if(days>=0 && days<=7){ const row=[...tbody.children].find(tr=> tr.querySelector(`[data-det='${t.id}']`)); if(row) row.classList.add('ring-2','ring-amber-300'); }
+  });
+
+  // أحداث الاختيار
+  document.getElementById('selAll').checked = slice.length>0 && slice.every(t=> state.selection.has(t.id));
+  tbody.querySelectorAll('[data-sel]').forEach(cb=>{ cb.onchange = ()=>{ const id=Number(cb.getAttribute('data-sel')); if(cb.checked) state.selection.add(id); else state.selection.delete(id); renderBulkBar(); }; });
+
+  // حفظ سريع
+  if(FEATURES.inlineEdit){
+    tbody.querySelectorAll('[data-qsave]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const id = Number(btn.getAttribute('data-qsave'));
+        const t = state.tenders.find(x=>x.id===id); if(!t) return;
+        const ip = tbody.querySelector(`[data-qperson='${id}']`);
+        const iv = tbody.querySelector(`[data-qvisit='${id}']`);
+        const is = tbody.querySelector(`[data-qstatus='${id}']`);
+        const old = {...t};
+        t.person = ip? ip.value.trim() : t.person;
+        t.visitDate = iv? iv.value : t.visitDate;
+        const newStatus = is? is.value : t.status;
+        if((newStatus==='lost'||newStatus==='canceled') && !t.reason){
+          alert('ينبغي إدخال سبب عند اختيار خاسرة/ملغاة (افتح تفاصيل المنقصة).');
+          return;
+        }
+        t.status = newStatus;
+        logChange(t, `تعديل سريع: شخص/زيارة/حالة`);
+        await persist();
+        renderAll();
+      };
+    });
+  }
+
+  // تفاصيل/حذف
+  slice.forEach(t=>{
+    const det = tbody.querySelector(`[data-det='${t.id}']`); if(det) det.onclick = ()=> openModal(t.id);
+    const del = tbody.querySelector(`[data-del='${t.id}']`); if(del) del.onclick = ()=> handleDelete(t.id);
+  });
+}
+
+function renderBulkBar(){
+  const bar = document.getElementById('bulkBar');
+  const count = state.selection.size;
+  document.getElementById('selCount').textContent = count;
+  bar.classList.toggle('hidden', !FEATURES.bulkActions || count===0);
+}
+
+async function handleDelete(id){
+  if(!confirm('حذف المنقصة؟')) return;
+  const i = state.tenders.findIndex(x=>x.id===id); if(i<0) return;
+  const t = state.tenders[i];
+  if(FEATURES.recycleBin){
+    t.deletedAt = new Date().toISOString();
+    state.trash.push(t);
+    state.tenders.splice(i,1);
+  }else{
+    state.tenders.splice(i,1);
+  }
+  logChange(t, 'حذف');
+  await persist();
+  renderAll();
+}
+
+// ====================== نافذة التفاصيل ======================
+function emptyTender(){
+  return { id: Date.now(), reference:"", name:"", type:"", owner:"", person:"",
+    deadline:"", submittedAt:"", visitDate:"", status:"draft", reason:"",
+    bidAmount:"", bidCurrency:"LYD", tags:[], attachments:[], techUrl:"", finUrl:"", notes:"", log:[] };
+}
+
+function modalHtml(t){
+  const x = t || emptyTender();
+  const tags = (x.tags||[]).join(', ');
+  const atts = (x.attachments||[]).map((a,i)=>`<div class='flex gap-2 items-center mb-1'><input class='border rounded px-2 py-1 w-40' placeholder='عنوان' data-att-label='${i}' value='${esc(a.label||"")}'/><input class='border rounded px-2 py-1 flex-1' placeholder='https://…' data-att-url='${i}' value='${esc(a.url||"")}'/><button class='btn btn-danger' data-att-del='${i}'>حذف</button></div>`).join('');
+  const logHtml = FEATURES.activityLog && x.log && x.log.length? x.log.slice().reverse().map(l=>`<div class='text-xs text-slate-600'>${esc(l.date)} • ${esc(l.user||'—')} • ${esc(l.action||'')} ${l.notes? '— '+esc(l.notes): ''}</div>`).join('') : '<div class="text-xs text-slate-400">لا يوجد نشاط حتى الآن</div>';
+
+  return `
+  <div class="mask" id="m_mask"><div class="panel">
+    <div class="p-4 border-b flex items-center justify-between">
+      <h2 class="text-lg font-bold">${t? 'تفاصيل المناقصة':'مناقصة جديدة'}</h2>
+      <button class="btn" id="m_close">إغلاق</button>
+    </div>
+    <div class="p-4 grid md:grid-cols-2 gap-3">
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">الرقم المرجعي</div><input id="m_ref" class="w-full border rounded-xl px-3 py-2" value="${esc(x.reference)}"/></label>
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">اسم المشروع / المناقصة</div><input id="m_name" class="w-full border rounded-xl px-3 py-2" value="${esc(x.name)}"/></label>
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">نوع المناقصة</div><input id="m_type" class="w-full border rounded-xl px-3 py-2" value="${esc(x.type)}"/></label>
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">اسم الجهة</div><input id="m_owner" class="w-full border rounded-xl px-3 py-2" value="${esc(x.owner)}"/></label>
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">الشخص المكلَّف</div><input id="m_person" class="w-full border rounded-xl px-3 py-2" value="${esc(x.person)}"/></label>
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">تاريخ انتهاء التقديم</div><input id="m_deadline" type="date" class="w-full border rounded-xl px-3 py-2" value="${esc(x.deadline)}"/></label>
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">تاريخ المشاركة</div><input id="m_submitted" type="date" class="w-full border rounded-xl px-3 py-2" value="${esc(x.submittedAt)}"/></label>
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">موعد الزيارة</div><input id="m_visit" type="date" class="w-full border rounded-xl px-3 py-2" value="${esc(x.visitDate)}"/></label>
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">الحالة</div><select id="m_status" class="w-full border rounded-xl px-3 py-2">${STATUS_LIST.map(s=>`<option value='${s.v}' ${s.v===(x.status||'draft')?'selected':''}>${esc(s.label)}</option>`).join('')}</select></label>
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">سبب الحالة (إلزامي لـ خاسرة/ملغاة)</div><input id="m_reason" class="w-full border rounded-xl px-3 py-2" value="${esc(x.reason||"")}" placeholder="مثال: السعر أعلى من المنافس / مستند ناقص…"/></label>
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">قيمة العرض</div><input id="m_amount" class="w-full border rounded-xl px-3 py-2" value="${esc(x.bidAmount||"")}" placeholder="125000"/></label>
+      <label class="space-y-1 block"><div class="text-sm text-slate-600">العملة</div><input id="m_curr" class="w-full border rounded-xl px-3 py-2" value="${esc(x.bidCurrency||"LYD")}" placeholder="LYD"/></label>
+      ${FEATURES.tags? `<label class="space-y-1 block md:col-span-2"><div class="text-sm text-slate-600">وسوم (مفصولة بفواصل)</div><input id="m_tags" class="w-full border rounded-xl px-3 py-2" value="${esc(tags)}" placeholder="معدات, توريد, صيانة"/></label>`:''}
+      ${FEATURES.attachments? `<div class="md:col-span-2"><div class="text-sm text-slate-600 mb-1">مرفقات</div><div id='attList'>${atts||''}</div><button class='btn mt-2' id='addAtt'>+ إضافة مرفق</button></div>`:''}
+      <label class="space-y-1 block md:col-span-2"><div class="text-sm text-slate-600">رابط العرض الفني</div><input id="m_tech" class="w-full border rounded-xl px-3 py-2" value="${esc(x.techUrl)}" placeholder="https://…"/></label>
+      <label class="space-y-1 block md:col-span-2"><div class="text-sm text-slate-600">رابط العرض المالي</div><input id="m_fin" class="w-full border rounded-xl px-3 py-2" value="${esc(x.finUrl)}" placeholder="https://…"/></label>
+      <label class="space-y-1 block md:col-span-2"><div class="text-sm text-slate-600">ملاحظات</div><textarea id="m_notes" class="w-full border rounded-xl px-3 py-2" rows="3">${esc(x.notes||"")}</textarea></label>
+      ${FEATURES.activityLog? `<div class="md:col-span-2"><div class="text-sm text-slate-600 mb-1">سجل النشاط</div>${logHtml}</div>`:''}
+    </div>
+    <div class="p-4 border-t flex justify-end gap-2">
+      <button class="btn" id="m_cancel">إلغاء</button>
+      <button class="btn btn-primary" id="m_save">حفظ</button>
+    </div>
+  </div></div>`;
+}
+
+function openModal(id){
+  const host = document.getElementById("modalHost");
+  const t = id? state.tenders.find(x=>x.id===id) : null;
+  host.innerHTML = modalHtml(t);
+  const g = (id)=>document.getElementById(id);
+  const mclose = ()=> host.innerHTML="";
+  g("m_close").onclick = mclose; g("m_cancel").onclick = mclose;
+
+  // مرفقات: إضافة/حذف
+  if(FEATURES.attachments){
+    const list = document.getElementById('attList');
+    const addBtn = document.getElementById('addAtt');
+    if(addBtn){ addBtn.onclick = ()=>{
+      const i = list.querySelectorAll('[data-att-label]').length;
+      list.insertAdjacentHTML('beforeend', `<div class='flex gap-2 items-center mb-1'><input class='border rounded px-2 py-1 w-40' placeholder='عنوان' data-att-label='${i}'/><input class='border rounded px-2 py-1 flex-1' placeholder='https://…' data-att-url='${i}'/><button class='btn btn-danger' data-att-del='${i}'>حذف</button></div>`);
+      bindAttDel();
+    }; }
+    function bindAttDel(){
+      list.querySelectorAll('[data-att-del]').forEach(d=>{ d.onclick = ()=> d.parentElement.remove(); });
+    }
+    bindAttDel();
+  }
+
+  g("m_save").onclick = async ()=>{
+    const m = t? {...t} : emptyTender();
+    m.reference = g("m_ref").value.trim();
+    m.name = g("m_name").value.trim();
+    m.type = g("m_type").value.trim();
+    m.owner = g("m_owner").value.trim();
+    m.person = g("m_person").value.trim();
+    m.deadline = g("m_deadline").value;
+    m.submittedAt = g("m_submitted").value;
+    m.visitDate = g("m_visit").value;
+    m.status = g("m_status").value;
+    m.reason = g("m_reason").value.trim();
+    m.bidAmount = g("m_amount").value.trim();
+    m.bidCurrency = g("m_curr").value.trim() || "LYD";
+    m.techUrl = g("m_tech").value.trim();
+    m.finUrl = g("m_fin").value.trim();
+    m.notes = g("m_notes").value;
+
+    if(FEATURES.tags){
+      const rawTags = (document.getElementById('m_tags')?.value||'').split(',').map(s=>s.trim()).filter(Boolean);
+      m.tags = rawTags;
+    }
+
+    if(FEATURES.attachments){
+      const labels=[...document.querySelectorAll('[data-att-label]')];
+      const out=[];
+      labels.forEach(l=>{
+        const i=l.getAttribute('data-att-label');
+        const u=document.querySelector(`[data-att-url='${i}']`);
+        const label=l.value.trim(), url=u?.value.trim();
+        if(url) out.push({label,url});
+      });
+      m.attachments = out;
+    }
+
+    if((m.status==='lost'||m.status==='canceled') && !m.reason){
+      alert('سبب الحالة إلزامي عندما تكون خاسرة/ملغاة');
+      return;
+    }
+
+    if(!t){ state.tenders.push(m); logChange(m,'إضافة'); }
+    else { const idx=state.tenders.findIndex(x=>x.id===t.id); if(idx>=0){ m.id=t.id; state.tenders[idx]=m; logChange(m,'تعديل'); } }
+    await persist();
+    mclose();
+    renderAll();
+  };
+}
+
+function logChange(t, action, notes){
+  if(!FEATURES.activityLog) return;
+  (t.log||(t.log=[])).push({date:new Date().toISOString(), user: state.currentUser.username||'—', action, notes});
+}
+
+// ====================== تصدير/استيراد ======================
+const CSV_COLS = ["id","reference","name","type","owner","person","deadline","submittedAt","visitDate","status","bidAmount","bidCurrency","reason","notes","tags","attachments","techUrl","finUrl"];
+
+function exportJson(){
+  const blob=new Blob([JSON.stringify(state.tenders,null,2)],{type:"application/json"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tenders.json"; a.click();
+}
+function exportCsv(){
+  const lines = [CSV_COLS.join(",")].concat(
+    state.tenders.map(t=>{
+      const row = {...t};
+      row.tags = (t.tags||[]).join('|');
+      row.attachments = (t.attachments||[]).map(a=>`${a.label||''}::${a.url||''}`).join('|');
+      return CSV_COLS.map(c=>`"${String(row[c]??"").replace(/"/g,'""')}"`).join(',');
+    })
+  );
+  const blob=new Blob([lines.join("\n")],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tenders.csv"; a.click();
+}
+function downloadCsvTemplate(){
+  const blank = [CSV_COLS.join(',') , `""`+",".repeat(CSV_COLS.length-1)].join('\n');
+  const blob=new Blob([blank],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tenders-template.csv"; a.click();
+}
+function downloadJsonTemplate(){
+  const sample=[emptyTender()];
+  const blob=new Blob([JSON.stringify(sample,null,2)],{type:"application/json"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tenders-template.json"; a.click();
+}
+
+function showImportErrors(list){
+  const box = document.getElementById('importErrors');
+  if(!list || !list.length){ box.classList.add('hidden'); box.innerHTML=''; return; }
+  box.classList.remove('hidden');
+  box.innerHTML = `<div class='font-semibold mb-1'>أخطاء الاستيراد (${list.length}):</div>` + list.map(e=>`<div>سطر ${e.line}: ${esc(e.msg)}</div>`).join('');
+}
+
+function handleImportJsonFile(file){
+  const fr=new FileReader();
+  fr.onload = ()=>{
+    try{
+      const arr=JSON.parse(fr.result);
+      if(!Array.isArray(arr)) throw new Error("JSON غير صالح");
+      state.tenders = arr.filter(t=>!t.deletedAt);
+      state.trash = arr.filter(t=>t.deletedAt);
+      persist().then(renderAll);
+      showImportErrors([]);
+    }catch{ alert("JSON غير صالح"); }
+  };
+  fr.readAsText(file);
+}
+
+function parseCsvLine(line){
+  const parts=[]; let cur="",inside=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(ch==='"'){ inside=!inside; cur+=ch; }
+    else if(ch===',' && !inside){ parts.push(cur); cur=""; }
+    else cur+=ch;
+  }
+  parts.push(cur);
+  return parts.map(s=> s.replace(/^"|"$/g,"").replace(/""/g,'"'));
+}
+
+function handleImportCsvFile(file){
+  const fr=new FileReader();
+  fr.onload = ()=>{
+    const errs=[]; try{
+      const text=fr.result.replace(/\r/g,"");
+      const lines=text.split("\n").filter(Boolean);
+      const head=parseCsvLine(lines[0]);
+      const missing = CSV_COLS.filter(c=> !head.includes(c));
+      if(missing.length){ errs.push({line:1,msg:`أعمدة مفقودة: ${missing.join(' ، ')}`}); }
+      const idx=(name)=> head.indexOf(name);
+      const get=(arr,name)=> arr[idx(name)]||"";
+      const out=[];
+      for(let i=1;i<lines.length;i++){
+        const cols=parseCsvLine(lines[i]);
+        if(!cols.length) continue;
+        const t=emptyTender();
+        t.id = Number(get(cols,'id')) || Date.now()+Math.random();
+        t.reference = get(cols,'reference');
+        t.name = get(cols,'name');
+        t.type = get(cols,'type');
+        t.owner = get(cols,'owner');
+        t.person = get(cols,'person');
+        t.deadline = get(cols,'deadline');
+        t.submittedAt = get(cols,'submittedAt');
+        t.visitDate = get(cols,'visitDate');
+        t.status = get(cols,'status')||'draft';
+        t.reason = get(cols,'reason');
+        t.bidAmount = get(cols,'bidAmount');
+        t.bidCurrency = get(cols,'bidCurrency')||'LYD';
+        t.techUrl = get(cols,'techUrl');
+        t.finUrl = get(cols,'finUrl');
+        t.notes = get(cols,'notes');
+        const tags = get(cols,'tags');
+        t.tags = tags? tags.split('|').map(s=>s.trim()).filter(Boolean): [];
+        const atts = get(cols,'attachments');
+        t.attachments = atts? atts.split('|').map(p=>{ const [label,url]=p.split('::'); return {label:label||'', url:url||''}; }).filter(a=>a.url): [];
+        // تحقق بسيط
+        if(!t.name) errs.push({line:i+1,msg:'اسم المناقصة مفقود'});
+        if((t.status==='lost'||t.status==='canceled') && !t.reason) errs.push({line:i+1,msg:'سبب الحالة مطلوب لـ lost/canceled'});
+        out.push(t);
+      }
+      showImportErrors(errs);
+      if(errs.length){ alert('تم العثور على أخطاء. راجع القائمة أعلى الصفحة. لم يتم الحفظ.'); return; }
+      state.tenders = out;
+      persist().then(renderAll);
+    }catch(e){ alert('CSV غير صالح'); }
+  };
+  fr.readAsText(file);
+}
+
+// ====================== التقارير ======================
+function renderReports(){ if(!FEATURES.reports){ document.getElementById('reportsTab').classList.add('hidden'); return; }
+  const rows = state.tenders.slice();
+  const now = new Date(); const y=now.getFullYear(), m=now.getMonth();
+  const thisMonth = rows.filter(t=> t.submittedAt && (new Date(t.submittedAt)).getFullYear()===y && (new Date(t.submittedAt)).getMonth()===m);
+  const totalSubmittedAmount = thisMonth.reduce((s,t)=> s+parseNum(t.bidAmount),0);
+  const wonRows = rows.filter(t=> t.status==='won');
+  const wonAmount = wonRows.reduce((s,t)=> s+parseNum(t.bidAmount),0);
+  const wonLost = rows.filter(t=> t.status==='won'||t.status==='lost');
+  const winRate = wonLost.length? Math.round((wonRows.length/wonLost.length)*100): 0;
+
+  document.getElementById('reportCards').innerHTML = [
+    card('مقدَّم هذا الشهر', thisMonth.length),
+    card('مجموع مبالغه', totalSubmittedAmount.toLocaleString()),
+    card('فائزة (عدد)', wonRows.length),
+    card('مجموع مبالغ الفائزة', wonAmount.toLocaleString()),
+  ].join('');
+
+  // Pipeline
+  const groupByStatus = STATUS_LIST.map(s=> ({s:s.v, name:s.label, count:0, amount:0}));
+  rows.forEach(t=>{ const g=groupByStatus.find(x=>x.s===t.status)||groupByStatus[0]; g.count++; g.amount+=parseNum(t.bidAmount); });
+  document.getElementById('pipeline').innerHTML = groupByStatus.map(g=>`<div class='flex justify-between border-b py-1'><div>${esc(g.name)}</div><div>${g.count} | ${g.amount.toLocaleString()}</div></div>`).join('');
+
+  // شهري بحسب submittedAt
+  const byMonth = {};
+  rows.forEach(t=>{ if(!t.submittedAt) return; const d=new Date(t.submittedAt); const k=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; (byMonth[k]||(byMonth[k]={count:0,amount:0})); byMonth[k].count++; byMonth[k].amount+=parseNum(t.bidAmount); });
+  document.getElementById('monthly').innerHTML = Object.entries(byMonth).sort().map(([k,v])=>`<div class='flex justify-between border-b py-1'><div>${k}</div><div>${v.count} | ${v.amount.toLocaleString()}</div></div>`).join('') || '<div class="text-sm text-slate-500">لا بيانات</div>';
+
+  // حسب الجهة
+  const byOwner = {};
+  rows.forEach(t=>{ const k=t.owner||'—'; (byOwner[k]||(byOwner[k]={count:0,amount:0})); byOwner[k].count++; byOwner[k].amount+=parseNum(t.bidAmount); });
+  document.getElementById('byOwner').innerHTML = Object.entries(byOwner).sort((a,b)=> b[1].amount-a[1].amount).map(([k,v])=>`<div class='flex justify-between border-b py-1'><div>${esc(k)}</div><div>${v.count} | ${v.amount.toLocaleString()}</div></div>`).join('');
+
+  // حسب النوع/الشخص
+  const byType = {}, byPerson={};
+  rows.forEach(t=>{ const kt=t.type||'—'; (byType[kt]||(byType[kt]={count:0,amount:0})); byType[kt].count++; byType[kt].amount+=parseNum(t.bidAmount);
+                    const kp=t.person||'—'; (byPerson[kp]||(byPerson[kp]={count:0,amount:0})); byPerson[kp].count++; byPerson[kp].amount+=parseNum(t.bidAmount); });
+  document.getElementById('byTypePerson').innerHTML = `
+    <div class='grid md:grid-cols-2 gap-3'>
+      <div><div class='font-semibold mb-1'>بالنوع</div>${Object.entries(byType).map(([k,v])=>`<div class='flex justify-between border-b py-1'><div>${esc(k)}</div><div>${v.count} | ${v.amount.toLocaleString()}</div></div>`).join('')}</div>
+      <div><div class='font-semibold mb-1'>بالشخص</div>${Object.entries(byPerson).map(([k,v])=>`<div class='flex justify-between border-b py-1'><div>${esc(k)}</div><div>${v.count} | ${v.amount.toLocaleString()}</div></div>`).join('')}</div>
+    </div>`;
+}
+
+function downloadMonthCsv(){
+  const now = new Date(); const y=now.getFullYear(), m=now.getMonth();
+  const rows = state.tenders.filter(t=> t.submittedAt && (new Date(t.submittedAt)).getFullYear()===y && (new Date(t.submittedAt)).getMonth()===m);
+  const lines=[CSV_COLS.join(',')].concat(rows.map(t=>{
+    const row = {...t}; row.tags=(t.tags||[]).join('|'); row.attachments=(t.attachments||[]).map(a=>`${a.label||''}::${a.url||''}`).join('|');
+    return CSV_COLS.map(c=>`"${String(row[c]??"").replace(/"/g,'""')}"`).join(',');
+  }));
+  const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`tenders-${y}-${String(m+1).padStart(2,'0')}.csv`; a.click();
+}
+
+// ====================== التقويم ======================
+function renderCalendar(){ if(!FEATURES.calendar){ document.getElementById('calendarTab').classList.add('hidden'); return; }
+  const holder = document.getElementById('calendar');
+  const view = document.getElementById('calView').value;
+  const ref = document.getElementById('calRef').value || todayStr().slice(0,7);
+  const [yr,mo] = ref.split('-').map(Number);
+  const data = state.tenders.map(t=> ({
+    id:t.id,
+    name:t.name,
+    deadline: t.deadline? new Date(t.deadline): null,
+    visit: t.visitDate? new Date(t.visitDate): null,
+    status: t.status,
+    amount: t.bidAmount, curr:t.bidCurrency
+  }));
+
+  if(view==='week'){
+    // أسبوع: عرض قائمة أحداث لأسبوع المرجع
+    const first = new Date(ref+'-01');
+    const start = new Date(); start.setFullYear(yr, mo-1, 1);
+    const now = new Date();
+    const weekStart = new Date(now); weekStart.setDate(now.getDate()-now.getDay());
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate()+6);
+    const items = [];
+    data.forEach(e=>{
+      if(e.deadline && e.deadline>=weekStart && e.deadline<=weekEnd) items.push({date:e.deadline, label:`انتهاء: ${e.name}`});
+      if(e.visit && e.visit>=weekStart && e.visit<=weekEnd) items.push({date:e.visit, label:`زيارة: ${e.name}`});
+    });
+    items.sort((a,b)=>a.date-b.date);
+    holder.innerHTML = items.map(i=>`<div class='border-b py-1'><span class='badge mr-2'>${i.date.toISOString().slice(0,10)}</span>${esc(i.label)}</div>`).join('') || '<div class="text-sm text-slate-500">لا أحداث هذا الأسبوع</div>';
+  }else{
+    // شهر: شبكة بسيطة (تقويم نصي)
+    const first = new Date(yr, mo-1, 1);
+    const startDay = first.getDay(); // 0..6
+    const daysInMonth = new Date(yr, mo, 0).getDate();
+    const cells=[]; for(let i=0;i<startDay;i++) cells.push(''); for(let d=1; d<=daysInMonth; d++) cells.push(String(d));
+    const eventsByDay = {};
+    data.forEach(e=>{
+      if(e.deadline && e.deadline.getFullYear()===yr && (e.deadline.getMonth()+1)===mo){ const d=e.deadline.getDate(); (eventsByDay[d]||(eventsByDay[d]=[])).push({type:'انتهاء', name:e.name}); }
+      if(e.visit && e.visit.getFullYear()===yr && (e.visit.getMonth()+1)===mo){ const d=e.visit.getDate(); (eventsByDay[d]||(eventsByDay[d]=[])).push({type:'زيارة', name:e.name}); }
+    });
+    holder.innerHTML = `<div class='grid grid-cols-7 gap-2'>` + cells.map((txt,i)=>{
+      const d = Number(txt)||0; const ev = eventsByDay[d]||[];
+      return `<div class='border rounded p-2 min-h-[70px] ${d?"bg-slate-50":"bg-white soft"}'><div class='text-xs text-slate-500 mb-1'>${txt||""}</div>${ev.map(e=>`<div class='text-xs'>• ${esc(e.type)}: ${esc(e.name)}</div>`).join('')}</div>`;
+    }).join('') + `</div>`;
+  }
+}
+
+// ====================== سلة المهملات ======================
+function renderRecycle(){
+  if(!FEATURES.recycleBin){ document.getElementById('recycleTab').style.display='none'; document.getElementById('recycleTabPanel').classList.add('hidden'); return; }
+  document.getElementById('recycleTab').style.display='inline-block';
+  const box = document.getElementById('recycleList');
+  const rows = state.trash.slice().sort((a,b)=> (b.deletedAt||'').localeCompare(a.deletedAt||''));
+  box.innerHTML = rows.map(t=>`<div class='flex items-center justify-between border-b py-2'><div><div class='font-medium'>${esc(t.name||'—')}</div><div class='text-xs text-slate-600'>${esc(t.owner||'—')} • حُذف: ${esc(t.deletedAt||'')}</div></div><div class='flex gap-2'><button class='btn' data-restore='${t.id}'>استرجاع</button><button class='btn btn-danger' data-purge='${t.id}'>حذف نهائي</button></div></div>`).join('') || '<div class="text-sm text-slate-500">لا عناصر محذوفة خلال آخر 30 يوم</div>';
+  box.querySelectorAll('[data-restore]').forEach(b=>{ b.onclick = async ()=>{ const id=Number(b.getAttribute('data-restore')); const i=state.trash.findIndex(x=>x.id===id); if(i<0) return; const t=state.trash[i]; delete t.deletedAt; state.tenders.push(t); state.trash.splice(i,1); await persist(); renderAll(); } });
+  box.querySelectorAll('[data-purge]').forEach(b=>{ b.onclick = async ()=>{ const id=Number(b.getAttribute('data-purge')); const i=state.trash.findIndex(x=>x.id===id); if(i<0) return; state.trash.splice(i,1); await persist(); renderAll(); } });
+  document.getElementById('emptyTrash').onclick = async ()=>{ if(!confirm('سيتم حذف العناصر المحذوفة نهائيًا – متأكد؟')) return; state.trash=[]; await persist(); renderAll(); };
+}
+
+// ====================== التنبيهات + Healthcheck ======================
+async function updateHealth(){
+  if(!FEATURES.healthcheck){ document.getElementById('apiHealth').style.display='none'; return; }
+  const tag = document.getElementById('apiHealth');
+  try{ await kvGet('nwgd_session'); tag.textContent='API ✓'; tag.classList.remove('soft'); tag.classList.add('bg-emerald-50'); }
+  catch{ tag.textContent='API ✗'; tag.classList.remove('bg-emerald-50'); tag.classList.add('bg-rose-50'); }
+}
+
+function maybeNotify(){
+  if(!state.notifGranted) return;
+  const met = computeMetrics(state.tenders);
+  if(met.nearDeadline>0) new Notification('تنبيه المناقصات', { body:`${met.nearDeadline} مناقصات تقترب من انتهاء التقديم خلال 30 يومًا.` });
+  if(met.upcomingVisits>0) new Notification('تنبيه الزيارات', { body:`${met.upcomingVisits} زيارات خلال 14 يومًا.` });
+}
+
+// ====================== تبويبات + أحداث أعلى الصفحة ======================
+function switchTab(name){ state.activeTab=name; document.querySelectorAll('[data-tab]').forEach(b=>{ b.classList.toggle('btn-primary', b.getAttribute('data-tab')===name); });
+  document.getElementById('listTab').classList.toggle('hidden', name!=='tenders');
+  document.getElementById('reportsTab').classList.toggle('hidden', name!=='reports');
+  document.getElementById('calendarTab').classList.toggle('hidden', name!=='calendar');
+  document.getElementById('recycleTabPanel').classList.toggle('hidden', name!=='recycle');
+  if(name==='reports') renderReports();
+  if(name==='calendar') renderCalendar();
+  if(name==='recycle') renderRecycle();
+}
+
+// ====================== واجهة عامة ======================
+function renderAll(){
+  // بطاقات + جدول + شريط جماعي
+  renderTable();
+  renderBulkBar();
+  // تبويب نشط
+  switchTab(state.activeTab);
+}
+
+function showToast(){ const t=document.getElementById('toast'); t.classList.remove('hidden'); clearTimeout(showToast._t); showToast._t=setTimeout(()=>t.classList.add('hidden'), 1200); }
+
+// ====================== ربط الأحداث الثابتة ======================
+function bindStatic(){
+  // تبويبات
+  document.querySelectorAll('[data-tab]').forEach(b=>{ b.onclick = ()=> switchTab(b.getAttribute('data-tab')); });
+
+  // بحث/حجم/فلاتر
+  document.getElementById('q').oninput = e=>{ state.search=e.target.value; state.page=1; saveUiPrefs(); renderAll(); };
+  document.getElementById('ps').onchange = e=>{ state.pageSize=Number(e.target.value)||25; state.page=1; saveUiPrefs(); renderAll(); };
+  document.getElementById('fltOwner').onchange = e=>{ state.filter.owner=e.target.value; state.page=1; saveUiPrefs(); renderAll(); };
+  document.getElementById('fltStatus').onchange = e=>{ state.filter.status=e.target.value; state.page=1; saveUiPrefs(); renderAll(); };
+  document.getElementById('fltFrom').onchange = e=>{ state.filter.from=e.target.value; state.page=1; saveUiPrefs(); renderAll(); };
+  document.getElementById('fltTo').onchange = e=>{ state.filter.to=e.target.value; state.page=1; saveUiPrefs(); renderAll(); };
+  document.getElementById('mine').onclick = ()=>{ if(!state.currentUser.username) return alert('لا يوجد مستخدم حالي'); state.filter.owner=''; state.filter.status=''; state.search = state.currentUser.username; state.page=1; saveUiPrefs(); renderAll(); };
+  document.getElementById('clearFilters').onclick = ()=>{ state.search=''; state.filter={owner:'',status:'',from:'',to:''}; state.page=1; saveUiPrefs(); renderAll(); };
+
+  // الصفحات
+  document.getElementById('first').onclick = ()=>{ state.page=1; renderAll(); };
+  document.getElementById('prev').onclick = ()=>{ state.page=Math.max(1,state.page-1); renderAll(); };
+  document.getElementById('next').onclick = ()=>{ state.page=state.page+1; renderAll(); };
+  document.getElementById('last').onclick = ()=>{ const rows=applyFilters(state.tenders); const pages=Math.max(1, Math.ceil(rows.length/state.pageSize)); state.page=pages; renderAll(); };
+
+  // فرز الأعمدة
+  document.querySelectorAll('th[data-sort]').forEach(th=>{
+    th.onclick = ()=>{ const k=th.getAttribute('data-sort'); const s=state.sort; if(s.key!==k){ s.key=k; s.dir=1; } else { s.dir = s.dir===1? -1 : (s.dir===-1? 0 : 1); } renderAll(); };
+  });
+
+  // تحديد الكل
+  document.getElementById('selAll').onchange = e=>{
+    const rows = paginate(applySort(applyFilters(state.tenders))).slice;
+    if(e.target.checked) rows.forEach(t=> state.selection.add(t.id)); else rows.forEach(t=> state.selection.delete(t.id));
+    renderBulkBar();
+  };
+
+  // جماعي
+  STATUS_LIST.forEach(s=>{ const opt=new Option(s.label,s.v); document.getElementById('bulkStatus').appendChild(opt); });
+  document.getElementById('applyBulk').onclick = async ()=>{
+    if(!FEATURES.bulkActions) return;
+    const bs = document.getElementById('bulkStatus').value;
+    const bp = document.getElementById('bulkPerson').value.trim();
+    const bv = document.getElementById('bulkVisit').value;
+    state.tenders.forEach(t=>{
+      if(!state.selection.has(t.id)) return;
+      if(bs){ if((bs==='lost'||bs==='canceled') && !t.reason){ /* لا نغير بدون سبب */ return; } t.status=bs; }
+      if(bp) t.person=bp;
+      if(bv) t.visitDate=bv;
+      logChange(t, 'تحديث جماعي');
+    });
+    state.selection.clear();
+    await persist();
+    renderAll();
+  };
+  document.getElementById('cancelBulk').onclick = ()=>{ state.selection.clear(); renderAll(); };
+
+  // تصدير/استيراد/طباعة/قوالب
+  document.getElementById('expCsv').onclick=exportCsv;
+  document.getElementById('expJson').onclick=exportJson;
+  document.getElementById('print').onclick=()=>window.print();
+  if(FEATURES.templates){
+    document.getElementById('dlCsvTpl').style.display='inline-block';
+    document.getElementById('dlJsonTpl').style.display='inline-block';
+    document.getElementById('dlCsvTpl').onclick=downloadCsvTemplate;
+    document.getElementById('dlJsonTpl').onclick=downloadJsonTemplate;
+  }
+  document.getElementById('impCsv').onchange=(e)=>{ const f=e.target.files[0]; if(f) handleImportCsvFile(f); e.target.value=""; };
+  document.getElementById('impJson').onchange=(e)=>{ const f=e.target.files[0]; if(f) handleImportJsonFile(f); e.target.value=""; };
+
+  // تنبيهات
+  document.getElementById('notifBtn').onclick = async ()=>{
+    if(!('Notification' in window)) return alert('المتصفح لا يدعم التنبيهات.');
+    const p = await Notification.requestPermission();
+    state.notifGranted = (p==='granted');
+    maybeNotify();
+  };
+
+  // نسخ احتياطي (admin)
+  document.getElementById('backupBtn').onclick = async ()=>{
+    if(FEATURES.permissions && state.currentUser.role!=="admin") return alert('غير مسموح');
+    const KEYS=['nwgd_tenders_v2','nwgd_users','nwgd_settings','nwgd_session','nwgd_session_tokens'];
+    for(const k of KEYS){
+      try{ const v = await kvGet(k); const blob=new Blob([JSON.stringify({key:k,value:v},null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`backup-${k}-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); }
+      catch{ /* تجاهل */ }
+    }
+  };
+
+  // تقويم
+  document.getElementById('calView').onchange=renderCalendar;
+  document.getElementById('calRef').onchange=renderCalendar;
+  document.getElementById('calToday').onclick=()=>{ document.getElementById('calRef').value = todayStr().slice(0,7); renderCalendar(); };
+
+  // اختصارات
+  window.addEventListener('keydown',(e)=>{
+    if(e.key==='/'){ e.preventDefault(); document.getElementById('q').focus(); }
+    if(e.key==='n'){ e.preventDefault(); document.getElementById('add').click(); }
+  });
+
+  // إضافة مناقصة
+  document.getElementById('add').onclick = ()=> openModal();
+}
+
+// ====================== بدء التشغيل ======================
+(async function init(){
+  bindStatic();
+  await loadAll();
+  updateHealth(); maybeNotify();
+  setInterval(updateHealth, 60000);
+})();
+</script>
+</body>
+</html>

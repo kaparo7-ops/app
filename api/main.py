@@ -1,38 +1,17 @@
 from routers import tender_ai
-import os, json, threading, sys
+import os, sys
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Any, Dict
+from typing import Any
 from datetime import datetime
+from .storage import read_db, write_db
 
-DATA_PATH = os.environ.get("DATA_PATH", "/data")
-os.makedirs(DATA_PATH, exist_ok=True)
-DB_FILE = os.path.join(DATA_PATH, "kv.json")
-LOCK = threading.Lock()
 SYNC_TOKEN = os.environ.get("SYNC_TOKEN")
 
 def log(*a):
     print("[API]", *a, file=sys.stdout, flush=True)
-
-def read_db() -> Dict[str, Any]:
-    with LOCK:
-        if not os.path.exists(DB_FILE):
-            return {}
-        try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            log("read_db error:", e)
-            return {}
-
-def write_db(data: Dict[str, Any]):
-    tmp = DB_FILE + ".tmp"
-    with LOCK:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, DB_FILE)
 
 app = FastAPI(title="Nawafed Team API", version="1.1")
 app.include_router(tender_ai.router)

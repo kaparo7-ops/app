@@ -99,8 +99,7 @@
     }
     function useAuth(){
       const [users,setUsers]=useServerState("nwgd_users",[]);
-      const [session,setSession]=useServerState("nwgd_session",null);
-      const [sessionTokens,setSessionTokens]=useServerState("nwgd_session_tokens",{}); // reserved
+      const [session,setSession]=useState(null);
       const [booted,setBooted]=useState(false);
 
       useEffect(()=>{(async()=>{
@@ -113,39 +112,50 @@
         }
         setBooted(true);
       })()},[]);
+      useEffect(()=>{(async()=>{
+        try{
+          const r=await fetch(`${FORCED_SERVER.base}/auth/session-check`,{credentials:"include"});
+          if(r.ok){
+            const data=await r.json();
+            if(data?.user){
+              setSession({uid:data.user.id,username:data.user.username,role:data.user.role,lastActivity:Date.now()});
+            }
+          }else{
+            setSession(null);
+          }
+        }catch(e){ setSession(null); }
+      })()},[]);
       async function login(username,password){
-        const u=(users||[]).find(x=>x.username.toLowerCase()===String(username).toLowerCase());
-        if(!u) return {ok:false,msg:"المستخدم غير موجود"};
-        const h=await pbkdf2(password,u.salt,u.iterations||150000);
-        if(h!==u.passHash) return {ok:false,msg:"كلمة المرور غير صحيحة"};
-        const sid='s'+Date.now()+Math.random().toString(36).slice(2);
-        const exp=Date.now()+1000*60*60*24*30;
-        const tokens=Object.assign({},(await kvGet("nwgd_session_tokens"))||{});
-        tokens[sid]={uid:u.id,username:u.username,role:u.role,exp};
-        await kvPut("nwgd_session_tokens",tokens);
-        localStorage.setItem("nwgd_sid",sid);
-        setSession({uid:u.id,username:u.username,role:u.role,lastActivity:Date.now()});
+        let resp;
+        try{
+          resp=await fetch(`${FORCED_SERVER.base}/auth/login`,{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({username,password}),
+            credentials:"include"
+          });
+        }catch(e){
+          return {ok:false,msg:"تعذر الاتصال بالخادم"};
+        }
+        if(resp.status===401){
+          const err=await resp.json().catch(()=>({detail:""}));
+          return {ok:false,msg:err.detail||"بيانات الدخول غير صحيحة"};
+        }
+        if(!resp.ok){
+          return {ok:false,msg:"حدث خطأ أثناء تسجيل الدخول"};
+        }
+        const data=await resp.json().catch(()=>({}));
+        if(data?.user){
+          setSession({uid:data.user.id,username:data.user.username,role:data.user.role,lastActivity:Date.now()});
+        }
         return {ok:true};
       }
       async function logout(){
-        const sid=localStorage.getItem("nwgd_sid");
-        const tokens=Object.assign({},(await kvGet("nwgd_session_tokens"))||{});
-        delete tokens[sid];
-        await kvPut("nwgd_session_tokens",tokens);
-        localStorage.removeItem("nwgd_sid");
+        try{
+          await fetch(`${FORCED_SERVER.base}/auth/logout`,{method:"POST",credentials:"include"});
+        }catch(e){}
         setSession(null);
       }
-      useEffect(()=>{(async()=>{
-        try{
-          const sid=localStorage.getItem("nwgd_sid");
-          if(!sid) return;
-          const tokens=await kvGet("nwgd_session_tokens");
-          const t=tokens&&tokens[sid];
-          if(t && t.exp>Date.now()){
-            setSession({uid:t.uid,username:t.username,role:t.role,lastActivity:Date.now()});
-          }
-        }catch(e){}
-      })()},[]);
       return {users,setUsers,session,setSession,login,logout,booted};
     }
 

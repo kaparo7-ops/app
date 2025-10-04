@@ -1,0 +1,18 @@
+# أسرار وبيئة
+.env
+.env.*
+# بيانات قواعد وملفات تشغيلية
+pgdata/
+data/
+# شهادات ولوحات
+letsencrypt/
+# نسخ احتياطية وملفات ضخمة
+_backups/
+backup-*.tgz
+*.tgz
+*.tar.gz
+*.sql
+# مخلفات مؤقتة
+*.log
+__pycache__/
+*.pyc

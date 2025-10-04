@@ -48,7 +48,7 @@
 
   <script type="text/babel" data-presets="env,react">
     // ===== Core =====
-    const FORCED_SERVER = { mode:"server", base:"/api", token:"ChangeMe-LongRandomToken!" };
+    const FORCED_SERVER = { mode:"server", base:"http://projects-host:8001/api", token:"HkOyJOCgRI3AUnu37tEZLSEoZJvTjv7j6ORlzWWRdciteHz6" };
     const {useState,useEffect,useMemo,useRef} = React;
     const todayISO=()=>new Date().toISOString().slice(0,10);
     const num=v=>{const n=Number(String(v).replace(/[^0-9.\-]/g,'')); return isNaN(n)?0:n};

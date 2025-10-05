@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Depends, Body, HTTPException, Request
 from typing import List, Optional
 from services.tender_ai_service import TenderAIService  # انتبه: بدون api.
-from ..session_guard import require_session, get_session_user
+from session_guard import require_session, get_session_user
 
 
 def require_active_user(req: Request):

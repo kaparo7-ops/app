@@ -16,6 +16,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       SECRET_KEY: WLxG1oMgaFGeVADQuo8EYPSJLW2ch7HCsgmCQqliCbVpmzftQvEaYIrZkiBCPObm
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-please-change}
       ORIGINS: http://${DOMAIN},https://${DOMAIN}
       DATA_PATH: /data
       SYNC_TOKEN: HkOyJOCgRI3AUnu37tEZLSEoZJvTjv7j6ORlzWWRdciteHz6

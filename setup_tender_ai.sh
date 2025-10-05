@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+: "${SESSION_SECRET:=dev-session-secret-please-change}"
+export SESSION_SECRET
+
 echo "==> إنشاء المجلدات"
 mkdir -p app/routers app/services app/utils alembic/versions
 

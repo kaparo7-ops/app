@@ -162,6 +162,9 @@ else
 fi
 
 echo "==> Build & restart API container"
+if [ -z "${SESSION_SECRET:-}" ]; then
+  export SESSION_SECRET=dev-session-secret-please-change
+fi
 if command -v docker >/dev/null 2>&1 && [ -f docker-compose.yml ]; then
   docker compose build api
   docker compose up -d api

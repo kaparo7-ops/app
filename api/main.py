@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any
 from datetime import datetime
-from storage import read_db, write_db
+from storage import read_db, write_db  # absolute import ensures uvicorn resolves helpers correctly
 
 SYNC_TOKEN = os.environ.get("SYNC_TOKEN")
 

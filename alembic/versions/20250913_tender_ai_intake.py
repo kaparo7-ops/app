@@ -2,7 +2,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "20250913_tender_ai_intake"
-down_revision = 'OCI'
+down_revision = None
 branch_labels = None
 depends_on = None
 

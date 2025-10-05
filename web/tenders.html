@@ -59,19 +59,25 @@
       return window.__RESOLVED_API_BASE__;
     }
 
-    const KNOWN_PRODUCTION_HOSTS = ["projects.nwgd.ly", "projects"].filter(Boolean);
     const normalize = (value) => value ? value.replace(/\/+$/, "") : value;
-    const buildOrigin = (proto, host, port) => `${proto}//${host}${port ? `:${port}` : ""}`;
     const ensureApi = (base) => {
       const trimmed = normalize(base || "");
       if (!trimmed) return "";
       return trimmed.endsWith("/api") ? trimmed : `${trimmed}/api`;
     };
 
+    const buildOrigin = (proto, host, port) => {
+      if (!proto || !host) return "";
+      const cleanedPort = port ? `:${port}` : "";
+      return `${proto}//${host}${cleanedPort}`;
+    };
+
     const probe = (base) => {
       if (!base) return false;
       const target = `${normalize(base)}/health`;
+
       if (typeof XMLHttpRequest !== "function") {
+        // لا يمكننا إجراء فحص حقيقي (مثلاً في Node/SSR)، فنعتمد على الرابط كما هو.
         return true;
       }
 
@@ -123,39 +129,44 @@
         return fallback;
       }
 
+      const PRODUCTION_HOSTS = ["projects.nwgd.ly", "projects"].filter(Boolean);
+      const LOCALLIKE_HOSTS = ["localhost", "127.0.0.1", "0.0.0.0", "projects-host"];
+
       const candidates = [];
 
-      const sameOriginPort = (() => {
-        if (port === "8080") {
-          return "8001";
-        }
-        if (!port && ["localhost", "127.0.0.1", "0.0.0.0", "projects-host"].includes(hostname)) {
-          return "8001";
-        }
-        return port;
-      })();
-
-      const sameOrigin = ensureApi(buildOrigin(protocol, hostname, sameOriginPort));
-      if (sameOrigin && !candidates.includes(sameOrigin)) {
-        candidates.push(sameOrigin);
+      const sameOrigin = ensureApi(buildOrigin(protocol, hostname, port));
+      if (sameOrigin) {
+        candidates.push({ base: sameOrigin, reason: "same-origin" });
       }
 
-      if (hostname.endsWith(".nwgd.ly") || KNOWN_PRODUCTION_HOSTS.includes(hostname)) {
-        const productionBase = ensureApi(buildOrigin("https:", "projects.nwgd.ly", ""));
-        if (productionBase && !candidates.includes(productionBase)) {
-          candidates.unshift(productionBase);
+      // في سيناريوهات التطوير، غالبًا ما يكون الواجهة على 8080 والـ API على 8001.
+      if ((port === "8080" || !port) && LOCALLIKE_HOSTS.includes(hostname)) {
+        const devAlt = ensureApi(buildOrigin("http:", hostname, "8001"));
+        if (devAlt && devAlt !== sameOrigin) {
+          candidates.push({ base: devAlt, reason: "dev-alt" });
         }
       }
 
-      for (const candidate of candidates) {
-        if (!candidate) continue;
-        if (!candidate.startsWith("http")) continue;
-        if (!candidate.includes("/api")) continue;
-        if (!probe(candidate)) {
+      // إذا كنا على نطاق الإنتاج المعروف فغالبًا ما تكون خدمة /api غير متاحة ويجب القفز مباشرة إلى الـ fallback.
+      if (PRODUCTION_HOSTS.includes(hostname)) {
+        candidates.push({ base: fallback, reason: "forced-production" });
+      }
+
+      for (const { base, reason } of candidates) {
+        if (!base) continue;
+
+        if (base === fallback) {
+          window.__RESOLVED_API_BASE__ = fallback;
+          return fallback;
+        }
+
+        if (!probe(base)) {
+          console.warn(`API base candidate rejected (${reason})`, base);
           continue;
         }
-        window.__RESOLVED_API_BASE__ = candidate;
-        return candidate;
+
+        window.__RESOLVED_API_BASE__ = base;
+        return base;
       }
 
       window.__RESOLVED_API_BASE__ = fallback;

@@ -55,23 +55,85 @@
       return fallback;
     }
 
+    if (window.__RESOLVED_API_BASE__) {
+      return window.__RESOLVED_API_BASE__;
+    }
+
+    const KNOWN_PRODUCTION_HOSTS = ["projects.nwgd.ly", "projects"].filter(Boolean);
+    const normalize = (value) => value ? value.replace(/\/+$/, "") : value;
+    const buildOrigin = (proto, host, port) => `${proto}//${host}${port ? `:${port}` : ""}`;
+    const ensureApi = (base) => {
+      const trimmed = normalize(base || "");
+      if (!trimmed) return "";
+      return trimmed.endsWith("/api") ? trimmed : `${trimmed}/api`;
+    };
+
+    const probe = (base) => {
+      if (!base) return false;
+      const target = `${normalize(base)}/health`;
+      if (typeof XMLHttpRequest !== "function") {
+        return true;
+      }
+
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", target, false);
+        xhr.timeout = 1200;
+        xhr.send(null);
+        return xhr.status >= 200 && xhr.status < 400;
+      } catch (probeErr) {
+        console.warn("API health probe failed for", target, probeErr);
+        return false;
+      }
+    };
+
     try {
       const { protocol, hostname, port } = window.location;
       if (!hostname) {
+        window.__RESOLVED_API_BASE__ = fallback;
         return fallback;
       }
 
-      let targetPort = port;
-      if (port === "8080") {
-        targetPort = "8001";
-      } else if (!port && ["localhost", "127.0.0.1", "0.0.0.0"].includes(hostname)) {
-        targetPort = "8001";
+      const candidates = [];
+
+      const sameOriginPort = (() => {
+        if (port === "8080") {
+          return "8001";
+        }
+        if (!port && ["localhost", "127.0.0.1", "0.0.0.0", "projects-host"].includes(hostname)) {
+          return "8001";
+        }
+        return port;
+      })();
+
+      const sameOrigin = ensureApi(buildOrigin(protocol, hostname, sameOriginPort));
+      if (sameOrigin && !candidates.includes(sameOrigin)) {
+        candidates.push(sameOrigin);
       }
 
-      const origin = `${protocol}//${hostname}${targetPort ? `:${targetPort}` : ""}`;
-      return `${origin.replace(/\/+$/, "")}/api`;
+      if (hostname.endsWith(".nwgd.ly") || KNOWN_PRODUCTION_HOSTS.includes(hostname)) {
+        const productionBase = ensureApi(buildOrigin("https:", "projects.nwgd.ly", ""));
+        if (productionBase && !candidates.includes(productionBase)) {
+          candidates.unshift(productionBase);
+        }
+      }
+
+      for (const candidate of candidates) {
+        if (!candidate) continue;
+        if (!candidate.startsWith("http")) continue;
+        if (!candidate.includes("/api")) continue;
+        if (!probe(candidate)) {
+          continue;
+        }
+        window.__RESOLVED_API_BASE__ = candidate;
+        return candidate;
+      }
+
+      window.__RESOLVED_API_BASE__ = fallback;
+      return fallback;
     } catch (err) {
       console.warn("Failed to resolve API base, using fallback", err);
+      window.__RESOLVED_API_BASE__ = fallback;
       return fallback;
     }
   };

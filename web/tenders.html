@@ -79,8 +79,37 @@
         const xhr = new XMLHttpRequest();
         xhr.open("GET", target, false);
         xhr.timeout = 1200;
+        xhr.setRequestHeader("Accept", "application/json, text/plain;q=0.8");
         xhr.send(null);
-        return xhr.status >= 200 && xhr.status < 400;
+
+        if (xhr.status >= 200 && xhr.status < 400) {
+          const contentType = (xhr.getResponseHeader("content-type") || "").toLowerCase();
+          const body = (xhr.responseText || "").trim();
+
+          // إذا عاد السيرفر صفحة HTML ثابتة فهذا يعني أن الـ API غير متوفر.
+          if (!contentType.includes("json") && body.startsWith("<")) {
+            return false;
+          }
+
+          if (!body) {
+            return true;
+          }
+
+          try {
+            const parsed = JSON.parse(body);
+            if (parsed && (parsed.status === "ok" || parsed.ok === true || parsed.healthy === true)) {
+              return true;
+            }
+          } catch (jsonErr) {
+            console.warn("Health check JSON parse failed", target, jsonErr);
+            return false;
+          }
+
+          // محتوى JSON صالح لكن بدون حقل متفق عليه، نعتبره صحيًا طالما أنه JSON.
+          return true;
+        }
+
+        return false;
       } catch (probeErr) {
         console.warn("API health probe failed for", target, probeErr);
         return false;

@@ -1,4 +1,7 @@
 set -euo pipefail
+
+: "${SESSION_SECRET:=dev-session-secret-please-change}"
+export SESSION_SECRET
 sed -i 's/from api\.services /from services /' api/routers/tender_ai.py || true
 sed -i 's/from api\.utils /from utils /' api/services/tender_ai_service.py || true
 docker compose build api

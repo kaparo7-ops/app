@@ -24,6 +24,8 @@ services:
       - db
     volumes:
       - /opt/nawafed/projects/data:/data
+      - ./alembic.ini:/app/alembic.ini:ro
+      - ./alembic:/app/alembic:ro
     ports:
       - "8001:8000"       # host:container  ← مهم
     restart: unless-stopped

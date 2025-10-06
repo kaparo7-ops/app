@@ -52,7 +52,6 @@ async def _extract_value(request: Request):
     the JSON payload directly. We accept both formats so the UI can persist
     settings without breaking existing integrations.
     """
-
     body = await request.body()
     if not body.strip():
         return None
@@ -60,6 +59,7 @@ async def _extract_value(request: Request):
     try:
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
+
         raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
     if isinstance(payload, dict) and set(payload.keys()) == {"value"}:

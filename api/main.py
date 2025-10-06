@@ -1,6 +1,8 @@
 from starlette.middleware.sessions import SessionMiddleware
 from routers.auth import router as auth_router
 from routers import tender_ai
+import base64
+import binascii
 import json
 import os, sys
 from fastapi import FastAPI, Request, HTTPException
@@ -20,10 +22,31 @@ app.include_router(tender_ai.router)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
+def _basic_matches(auth_header: str) -> bool:
+    """Return True when the Basic-Auth credentials include the sync token."""
+
+    try:
+        scheme, _, value = auth_header.partition(" ")
+        if scheme.lower() != "basic" or not value:
+            return False
+        decoded = base64.b64decode(value).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return False
+
+    username, _, password = decoded.partition(":")
+    return SYNC_TOKEN in (username, password)
+
+
 def require_token(req: Request):
     tok = req.headers.get("x-sync-token") or req.query_params.get("token")
-    if not SYNC_TOKEN or tok != SYNC_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    if SYNC_TOKEN and tok == SYNC_TOKEN:
+        return
+
+    auth = req.headers.get("authorization", "")
+    if SYNC_TOKEN and auth and _basic_matches(auth):
+        return
+
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 @app.middleware("http")
 async def logger(request: Request, call_next):
@@ -59,7 +82,6 @@ async def _extract_value(request: Request):
     try:
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
-
         raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
     if isinstance(payload, dict) and set(payload.keys()) == {"value"}:

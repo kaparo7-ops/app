@@ -1,22 +1,25 @@
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, EmailStr, root_validator
-
+from pydantic import BaseModel, EmailStr, model_validator
 router = APIRouter()
-
 class LoginIn(BaseModel):
     email: EmailStr | None = None
     username: str | None = None
     password: str | None = None  # موجود للواجهة فقط، لا نتحقق منه الآن
 
-    @root_validator
-    def _ensure_identifier(cls, values):
-        email = values.get("email")
-        username = values.get("username")
-        if not (email or username):
-            raise ValueError("email or username required")
+    @model_validator(mode="after")
+    def _ensure_identifier(cls, model):
+        email = model.email
+        username = (model.username or "").strip() if model.username is not None else None
+
         if username:
-            values["username"] = username.strip()
-        return values
+            model.username = username
+        else:
+            model.username = None
+
+        if not (email or model.username):
+            raise ValueError("email or username required")
+
+        return model
 
 SESSION_KEY = "user"
 

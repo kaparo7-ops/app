@@ -1,6 +1,7 @@
 from starlette.middleware.sessions import SessionMiddleware
 from routers.auth import router as auth_router
 from routers import tender_ai
+import json
 import os, sys
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,10 +52,14 @@ async def _extract_value(request: Request):
     the JSON payload directly. We accept both formats so the UI can persist
     settings without breaking existing integrations.
     """
+    body = await request.body()
+    if not body.strip():
+        return None
 
     try:
-        payload = await request.json()
-    except Exception as exc:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+
         raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
     if isinstance(payload, dict) and set(payload.keys()) == {"value"}:

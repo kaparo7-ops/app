@@ -1,6 +1,4 @@
 from starlette.middleware.sessions import SessionMiddleware
-from routers.auth import router as auth_router
-from routers import tender_ai
 import base64
 import binascii
 import json
@@ -8,7 +6,19 @@ import os, sys
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
-from storage import read_db, write_db  # absolute import ensures uvicorn resolves helpers correctly
+
+_MODULE_ROOT = os.path.dirname(__file__)
+if _MODULE_ROOT and _MODULE_ROOT not in sys.path:
+    sys.path.append(_MODULE_ROOT)
+
+try:  # keep compatibility whether imported as package or via PYTHONPATH
+    from routers.auth import router as auth_router
+    from routers import tender_ai
+    from storage import read_db, write_db
+except ModuleNotFoundError:  # pragma: no cover - fallback to package-relative imports
+    from .routers.auth import router as auth_router
+    from .routers import tender_ai
+    from .storage import read_db, write_db
 
 SYNC_TOKEN = os.environ.get("SYNC_TOKEN")
 

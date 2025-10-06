@@ -1,3 +1,5 @@
+from starlette.middleware.sessions import SessionMiddleware
+from routers.auth import router as auth_router
 from routers import tender_ai
 import os, sys
 from fastapi import FastAPI, Request, HTTPException
@@ -14,6 +16,8 @@ def log(*a):
     print("[API]", *a, file=sys.stdout, flush=True)
 
 app = FastAPI(title="Nawafed Team API", version="1.1")
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET","change-me"))
+app.include_router(auth_router, prefix="/auth")
 app.include_router(tender_ai.router)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])

@@ -85,7 +85,6 @@ async def _extract_value(request: Request):
     the JSON payload directly. We accept both formats so the UI can persist
     settings without breaking existing integrations.
     """
-
     body = await request.body()
     if not body.strip():
         return None

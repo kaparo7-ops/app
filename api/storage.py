@@ -15,9 +15,14 @@ def read_db() -> Dict[str, Any]:
             return {}
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
         except Exception:
             return {}
+
+        if not isinstance(data, dict):
+            return {}
+
+        return data
 
 
 def write_db(data: Dict[str, Any]) -> None:

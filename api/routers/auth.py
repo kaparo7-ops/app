@@ -1,18 +1,34 @@
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, root_validator
 
 router = APIRouter()
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    email: EmailStr | None = None
+    username: str | None = None
     password: str | None = None  # موجود للواجهة فقط، لا نتحقق منه الآن
+
+    @root_validator
+    def _ensure_identifier(cls, values):
+        email = values.get("email")
+        username = values.get("username")
+        if not (email or username):
+            raise ValueError("email or username required")
+        if username:
+            values["username"] = username.strip()
+        return values
 
 SESSION_KEY = "user"
 
 @router.post("/login")
 async def login(body: LoginIn, request: Request):
     # مصادقة بسيطة: أي إيميل مقبول، ضع جلسة
-    request.session[SESSION_KEY] = {"email": body.email}
+    payload = {}
+    if body.email:
+        payload["email"] = body.email
+    if body.username:
+        payload["username"] = body.username
+    request.session[SESSION_KEY] = payload
     return {"ok": True, "user": request.session[SESSION_KEY]}
 
 @router.get("/session-check")

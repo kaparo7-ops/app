@@ -86,6 +86,7 @@ async def _extract_value(request: Request):
     settings without breaking existing integrations.
     """
 
+
     body = await request.body()
     if not body.strip():
         return None

@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr, model_validator
 
-router = APIRouter()
 
+router = APIRouter()
 class LoginIn(BaseModel):
     email: EmailStr | None = None
     username: str | None = None
